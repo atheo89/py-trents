@@ -82,12 +82,12 @@ Options:
 Downloads are stored under:
 
 ```
-data/huggingface_notebooks/<selection>/
+data/huggingface_notebooks/<selection>/<repo_type>/
 ```
 
 ## Output
 
-The tool prints a ranked list of libraries and, when detectable, Jupyter extensions. Library charts are displayed with Plotly if installed.
+The tool prints a ranked list of libraries and, when detectable, Jupyter extensions. Library charts are displayed with Plotly if installed. Hugging Face runs also render per-repo-type charts (model/dataset/space) when available.
 
 Example plot title:
 
@@ -117,7 +117,7 @@ data/github_notebooks/
 data/huggingface_notebooks/
 ```
 
-Each source has its own tab with library usage charts plus full tables for libraries and extensions. A fourth tab aggregates all downloaded notebooks across sources.
+Each source has its own tab with library usage charts plus full tables for libraries and extensions. The Hugging Face tab lets you switch between repo types (model/dataset/space), and Kaggle/Hugging Face include an "All" option to aggregate their subcategories. A fourth tab aggregates all downloaded notebooks across sources.
 
 ## Notes
 

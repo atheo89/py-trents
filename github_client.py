@@ -100,6 +100,21 @@ def is_rate_limit_error(error: Exception) -> bool:
     return False
 
 
+def resolve_rate_limit_delay_seconds(error: HTTPError) -> float:
+    reset_value: str | None = error.headers.get("X-RateLimit-Reset")
+    if reset_value is None:
+        return 0.0
+    try:
+        reset_timestamp: int = int(reset_value)
+    except ValueError:
+        return 0.0
+    now_timestamp: int = int(time.time())
+    remaining_seconds: int = max(0, reset_timestamp - now_timestamp)
+    if remaining_seconds == 0:
+        return 0.0
+    return float(min(remaining_seconds + 1, 300))
+
+
 def calculate_backoff_seconds(attempt: int) -> float:
     base_delay: float = _INITIAL_DELAY_SECONDS * (2 ** (attempt - 1))
     jitter: float = random()
@@ -115,6 +130,10 @@ def execute_with_retry(request: RetryRequest) -> object:
             if not is_rate_limit_error(exc) or attempt >= request.max_retries:
                 raise
             delay_seconds: float = calculate_backoff_seconds(attempt)
+            if isinstance(exc, HTTPError):
+                reset_delay: float = resolve_rate_limit_delay_seconds(exc)
+                if reset_delay > delay_seconds:
+                    delay_seconds = reset_delay
             print(f"Rate limit hit during {request.operation_name}. Retrying in {delay_seconds:.1f}s.")
             time.sleep(delay_seconds)
     raise RuntimeError(f"Failed to execute {request.operation_name} after retries.")
@@ -152,6 +171,11 @@ def extract_items(response: Mapping[str, object]) -> list[object]:
     if isinstance(items_value, list):
         return items_value
     return []
+
+
+def resolve_target_count(selection: GitHubSelection) -> int:
+    desired_count: int = max(selection.max_notebooks * 5, _DEFAULT_PER_PAGE)
+    return min(desired_count, _DEFAULT_PER_PAGE * _MAX_PAGES)
 
 
 def get_str(data: Mapping[str, object], key: str) -> str:
@@ -227,7 +251,7 @@ def search_notebooks(selection: GitHubSelection) -> GitHubSearchResult:
     page: int = 1
     seen_keys: set[str] = set()
     notebook_refs: list[GitHubNotebookRef] = []
-    target_count: int = min(selection.max_notebooks * 3, _DEFAULT_PER_PAGE * _MAX_PAGES)
+    target_count: int = resolve_target_count(selection)
     total_count: int = 0
     while page <= _MAX_PAGES and len(notebook_refs) < target_count:
         search_request: GitHubSearchRequest = GitHubSearchRequest(query=selection.query, page=page, per_page=_DEFAULT_PER_PAGE)
@@ -310,38 +334,110 @@ def download_raw_file(url: str, output_path: Path) -> None:
     output_path.write_bytes(content)
 
 
+def is_lfs_pointer(text: str) -> bool:
+    normalized: str = text.lstrip()
+    return normalized.startswith("version https://git-lfs.github.com/spec/v1")
+
+
+def is_valid_notebook_content(content: bytes) -> bool:
+    text: str = content.decode("utf-8", errors="ignore")
+    if is_lfs_pointer(text):
+        return False
+    try:
+        data: object = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(data, dict):
+        return False
+    cells_value: object = data.get("cells")
+    if not isinstance(cells_value, list):
+        return False
+    return True
+
+
+def is_valid_notebook_file(path: Path) -> bool:
+    try:
+        content: bytes = path.read_bytes()
+    except OSError:
+        return False
+    return is_valid_notebook_content(content)
+
+
+def collect_existing_notebook_paths(output_dir: Path, max_notebooks: int) -> list[Path]:
+    if not output_dir.exists():
+        return []
+    paths: list[Path] = sorted(output_dir.rglob("*.ipynb"))
+    valid_paths: list[Path] = []
+    for path in paths:
+        if is_valid_notebook_file(path):
+            valid_paths.append(path)
+            if max_notebooks > 0 and len(valid_paths) >= max_notebooks:
+                break
+    return valid_paths
+
+
 def download_notebooks(selection: GitHubSelection) -> GitHubDownloadResult:
     if selection.max_notebooks < 1:
         raise ValueError("max_notebooks must be >= 1.")
     selection.output_dir.mkdir(parents=True, exist_ok=True)
+    existing_paths: list[Path] = collect_existing_notebook_paths(selection.output_dir, selection.max_notebooks)
+    if len(existing_paths) >= selection.max_notebooks:
+        return GitHubDownloadResult(notebook_paths=existing_paths, notebooks=[])
+    remaining_needed: int = selection.max_notebooks - len(existing_paths)
+    search_selection: GitHubSelection = GitHubSelection(max_notebooks=remaining_needed, query=selection.query, output_dir=selection.output_dir, selection_label=selection.selection_label)
     try:
-        search_result: GitHubSearchResult = search_notebooks(selection)
+        search_result: GitHubSearchResult = search_notebooks(search_selection)
     except HTTPError as exc:
         if exc.code == 401:
             print("GitHub search failed: 401 Unauthorized. Set GITHUB_TOKEN to use the API.")
+        elif is_rate_limit_error(exc):
+            print("GitHub search failed: API rate limit reached. Set GITHUB_TOKEN or retry later.")
         else:
             print(f"GitHub search failed: {exc}")
-        return GitHubDownloadResult(notebook_paths=[], notebooks=[])
+        return GitHubDownloadResult(notebook_paths=existing_paths, notebooks=[])
     except (URLError, RuntimeError) as exc:
         print(f"GitHub search failed: {exc}")
-        return GitHubDownloadResult(notebook_paths=[], notebooks=[])
+        return GitHubDownloadResult(notebook_paths=existing_paths, notebooks=[])
     sorted_refs: list[GitHubNotebookRef] = sorted(search_result.notebooks, key=lambda ref: (-ref.stars, ref.repository_full_name, ref.path))
-    selected_refs: list[GitHubNotebookRef] = sorted_refs[: selection.max_notebooks]
-    notebook_paths: list[Path] = []
+    notebook_paths: list[Path] = list(existing_paths)
     downloaded_refs: list[GitHubNotebookRef] = []
-    for ref in selected_refs:
+    existing_set: set[Path] = set(existing_paths)
+    invalid_count: int = 0
+    failed_count: int = 0
+    for ref in sorted_refs:
+        if len(notebook_paths) >= selection.max_notebooks:
+            break
         output_path: Path = build_output_path(selection.output_dir, ref)
-        if output_path.exists():
-            notebook_paths.append(output_path)
-            downloaded_refs.append(ref)
+        if output_path in existing_set:
             continue
+        if output_path.exists():
+            if is_valid_notebook_file(output_path):
+                notebook_paths.append(output_path)
+                downloaded_refs.append(ref)
+                continue
+            try:
+                output_path.unlink()
+            except OSError:
+                pass
         raw_url: str = build_raw_url(ref)
         try:
-            execute_with_retry(RetryRequest(operation_name=f"github_download {ref.repository_full_name}", action=lambda: download_raw_file(raw_url, output_path), max_retries=_MAX_RETRIES))
+            content: bytes = execute_with_retry(RetryRequest(operation_name=f"github_download {ref.repository_full_name}", action=lambda: request_download(raw_url), max_retries=_MAX_RETRIES))
         except Exception as exc:
             print(f"Failed to download {ref.repository_full_name}/{ref.path}: {exc}")
+            failed_count += 1
             continue
-        if output_path.exists():
-            notebook_paths.append(output_path)
-            downloaded_refs.append(ref)
+        if not is_valid_notebook_content(content):
+            invalid_count += 1
+            continue
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            output_path.write_bytes(content)
+        except OSError as exc:
+            print(f"Failed to write {output_path}: {exc}")
+            failed_count += 1
+            continue
+        notebook_paths.append(output_path)
+        downloaded_refs.append(ref)
+    if len(notebook_paths) < selection.max_notebooks:
+        print(f"GitHub search returned {len(sorted_refs)} candidates. Downloaded {len(notebook_paths)} valid notebooks, skipped {invalid_count} invalid notebooks, {failed_count} failed downloads.")
     return GitHubDownloadResult(notebook_paths=notebook_paths, notebooks=downloaded_refs)

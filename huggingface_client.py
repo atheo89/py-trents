@@ -56,6 +56,7 @@ class HuggingFaceListResult:
 class HuggingFaceDownloadResult:
     notebook_paths: list[Path]
     notebooks: list[HuggingFaceNotebookRef]
+    notebook_paths_by_type: dict[str, list[Path]]
 
 
 @dataclass(frozen=True)
@@ -384,7 +385,7 @@ def build_output_path(base_dir: Path, ref: HuggingFaceNotebookRef) -> Path:
     tail: str = sanitize_filename_component(file_name)
     if tail == "":
         tail = "notebook.ipynb"
-    return base_dir / f"{prefix}__{tail}"
+    return base_dir / ref.repo_type / f"{prefix}__{tail}"
 
 
 def download_raw_file(url: str, output_path: Path) -> None:
@@ -429,11 +430,13 @@ def download_notebooks(selection: HuggingFaceSelection) -> HuggingFaceDownloadRe
     selected_refs: list[HuggingFaceNotebookRef] = sorted_refs[: selection.max_notebooks]
     notebook_paths: list[Path] = []
     downloaded_refs: list[HuggingFaceNotebookRef] = []
+    notebook_paths_by_type: dict[str, list[Path]] = {}
     for ref in selected_refs:
         output_path: Path = build_output_path(selection.output_dir, ref)
         if output_path.exists():
             notebook_paths.append(output_path)
             downloaded_refs.append(ref)
+            notebook_paths_by_type.setdefault(ref.repo_type, []).append(output_path)
             continue
         raw_url: str = build_raw_url(ref)
         try:
@@ -444,5 +447,6 @@ def download_notebooks(selection: HuggingFaceSelection) -> HuggingFaceDownloadRe
         if output_path.exists():
             notebook_paths.append(output_path)
             downloaded_refs.append(ref)
+            notebook_paths_by_type.setdefault(ref.repo_type, []).append(output_path)
     print(f"Downloaded {len(notebook_paths)} notebooks to {selection.output_dir}.")
-    return HuggingFaceDownloadResult(notebook_paths=notebook_paths, notebooks=downloaded_refs)
+    return HuggingFaceDownloadResult(notebook_paths=notebook_paths, notebooks=downloaded_refs, notebook_paths_by_type=notebook_paths_by_type)

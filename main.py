@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
@@ -41,6 +41,7 @@ class AppReport:
     source_name: str
     selection_label: str
     requested_max: int
+    category_library_reports: dict[str, UsageReport] = field(default_factory=dict)
 
 
 class SourceType(Enum):
@@ -191,7 +192,7 @@ def run_kaggle_pipeline(config: AppConfig) -> AppReport:
     return AppReport(library_report=library_report, extension_report=extension_report, source_name=config.source.value, selection_label=config.selection_type.value, requested_max=config.max_notebooks)
 
 
-def collect_valid_usages(notebook_paths: Sequence[Path], normalizer_config: object, library_usages: list[NotebookFeatureUsage], extension_usages: list[NotebookFeatureUsage], processed_paths: set[Path], target_count: int) -> bool:
+def collect_valid_usages(notebook_paths: Sequence[Path], normalizer_config: object, library_usages: list[NotebookFeatureUsage], extension_usages: list[NotebookFeatureUsage], processed_paths: set[Path], target_count: int, path_to_category: Mapping[Path, str] | None = None, category_library_usages: dict[str, list[NotebookFeatureUsage]] | None = None, category_extension_usages: dict[str, list[NotebookFeatureUsage]] | None = None) -> bool:
     processed_any: bool = False
     for notebook_path in notebook_paths:
         if notebook_path in processed_paths:
@@ -204,8 +205,17 @@ def collect_valid_usages(notebook_paths: Sequence[Path], normalizer_config: obje
             print(f"Skipped invalid notebook {notebook_path}: {exc}")
             continue
         normalize_result = normalize_imports(NormalizeImportsRequest(raw_imports=parse_result.imports, config=normalizer_config))
-        library_usages.append(NotebookFeatureUsage(notebook_path=notebook_path, features=normalize_result.normalized_imports))
-        extension_usages.append(NotebookFeatureUsage(notebook_path=notebook_path, features=parse_result.extensions))
+        library_usage = NotebookFeatureUsage(notebook_path=notebook_path, features=normalize_result.normalized_imports)
+        extension_usage = NotebookFeatureUsage(notebook_path=notebook_path, features=parse_result.extensions)
+        library_usages.append(library_usage)
+        extension_usages.append(extension_usage)
+        if path_to_category is not None:
+            category_key: str | None = path_to_category.get(notebook_path)
+            if category_key is not None:
+                if category_library_usages is not None:
+                    category_library_usages.setdefault(category_key, []).append(library_usage)
+                if category_extension_usages is not None:
+                    category_extension_usages.setdefault(category_key, []).append(extension_usage)
         if len(library_usages) >= target_count:
             break
     return processed_any
@@ -252,6 +262,8 @@ def run_huggingface_pipeline(config: AppConfig) -> AppReport:
     normalizer_config = default_normalizer_config()
     library_usages: list[NotebookFeatureUsage] = []
     extension_usages: list[NotebookFeatureUsage] = []
+    category_library_usages: dict[str, list[NotebookFeatureUsage]] = {}
+    category_extension_usages: dict[str, list[NotebookFeatureUsage]] = {}
     processed_paths: set[Path] = set()
     attempt: int = 1
     max_attempts: int = 5
@@ -259,13 +271,20 @@ def run_huggingface_pipeline(config: AppConfig) -> AppReport:
         target_max: int = resolve_hf_target_max(config.max_notebooks, attempt)
         selection: HuggingFaceSelection = HuggingFaceSelection(max_notebooks=target_max, output_dir=selection_output_dir, selection_label=selection_label, repo_types=config.hf_repo_types, sort_by=config.hf_sort)
         download_result = download_huggingface_notebooks(selection)
-        processed_any: bool = collect_valid_usages(download_result.notebook_paths, normalizer_config, library_usages, extension_usages, processed_paths, config.max_notebooks)
+        path_to_category: dict[Path, str] = {}
+        for repo_type, notebook_paths in download_result.notebook_paths_by_type.items():
+            for notebook_path in notebook_paths:
+                path_to_category[notebook_path] = repo_type
+        processed_any: bool = collect_valid_usages(download_result.notebook_paths, normalizer_config, library_usages, extension_usages, processed_paths, config.max_notebooks, path_to_category=path_to_category, category_library_usages=category_library_usages, category_extension_usages=category_extension_usages)
         if not processed_any:
             break
         attempt += 1
     library_report: UsageReport = compute_usage_metrics(UsageMetricsRequest(notebook_usages=library_usages))
     extension_report: UsageReport = compute_usage_metrics(UsageMetricsRequest(notebook_usages=extension_usages))
-    return AppReport(library_report=library_report, extension_report=extension_report, source_name=config.source.value, selection_label=selection_label, requested_max=config.max_notebooks)
+    category_library_reports: dict[str, UsageReport] = {}
+    for category, notebook_usages in category_library_usages.items():
+        category_library_reports[category] = compute_usage_metrics(UsageMetricsRequest(notebook_usages=notebook_usages))
+    return AppReport(library_report=library_report, extension_report=extension_report, source_name=config.source.value, selection_label=selection_label, requested_max=config.max_notebooks, category_library_reports=category_library_reports)
 
 
 def run_pipeline(config: AppConfig) -> AppReport:
@@ -304,6 +323,19 @@ def render_plots(report: AppReport) -> None:
     except RuntimeError as exc:
         print(str(exc))
         return
+    if len(report.category_library_reports) == 0:
+        return
+    for category, category_report in sorted(report.category_library_reports.items()):
+        category_total: int = category_report.total_notebooks
+        if category_total == 0:
+            continue
+        category_label: str = category.replace("-", " ").title()
+        category_title: str = f"Top 20 most used python libraries (unique per notebook) Analyzed {category_total} {selection_label} {category_label} {source_label} notebooks"
+        category_max_items: int = min(20, len(category_report.usage))
+        try:
+            render_usage_report(PlotReportRequest(report=category_report, title=category_title, max_items=category_max_items, x_label="Library"))
+        except RuntimeError as exc:
+            print(str(exc))
 
 
 

@@ -29,7 +29,11 @@ DEFAULT_MAX_NOTEBOOKS: int = 0
 DEFAULT_KAGGLE_SELECTION: str = "top"
 DEFAULT_GITHUB_SELECTION: str = "most-starred"
 DEFAULT_HF_SELECTION: str = "most-liked"
+DEFAULT_HF_REPO_TYPE: str = "model"
+DEFAULT_HF_REPO_TYPES: list[str] = ["model", "dataset", "space"]
+DEFAULT_ALL_OPTION: str = "all"
 DEFAULT_ALL_SELECTION: str = "all-sources"
+KAGGLE_SELECTION_ORDER: list[str] = ["top", "hotness", "latest"]
 
 APP_STYLE: dict[str, str] = {"fontFamily": "Arial, sans-serif", "padding": "16px"}
 CARD_CONTAINER_STYLE: dict[str, str] = {"display": "flex", "gap": "12px", "flexWrap": "wrap", "marginTop": "12px"}
@@ -65,6 +69,7 @@ class SourceDefinition:
     label: str
     base_dir: Path
     default_selection: str
+    selection_label: str
     is_aggregate: bool
 
 
@@ -84,6 +89,9 @@ class ResolveSelectionOptionsRequest:
     base_dir: Path
     default_selection: str
     is_aggregate: bool
+    fallback_options: Sequence[str] | None = None
+    include_all: bool = False
+    preferred_order: Sequence[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -247,11 +255,12 @@ def resolve_sources(request: ResolveSourcesRequest) -> list[SourceDefinition]:
     kaggle_dir: Path = request.data_dir / "kaggle_notebooks"
     github_dir: Path = request.data_dir / "github_notebooks"
     huggingface_dir: Path = request.data_dir / "huggingface_notebooks"
+    huggingface_selection_dir: Path = resolve_huggingface_base_dir(huggingface_dir)
     return [
-        SourceDefinition(key="kaggle", label="Kaggle", base_dir=kaggle_dir, default_selection=DEFAULT_KAGGLE_SELECTION, is_aggregate=False),
-        SourceDefinition(key="github", label="GitHub", base_dir=github_dir, default_selection=DEFAULT_GITHUB_SELECTION, is_aggregate=False),
-        SourceDefinition(key="huggingface", label="Hugging Face", base_dir=huggingface_dir, default_selection=DEFAULT_HF_SELECTION, is_aggregate=False),
-        SourceDefinition(key="all", label="All sources", base_dir=request.data_dir, default_selection=DEFAULT_ALL_SELECTION, is_aggregate=True),
+        SourceDefinition(key="kaggle", label="Kaggle", base_dir=kaggle_dir, default_selection=DEFAULT_KAGGLE_SELECTION, selection_label="Selection", is_aggregate=False),
+        SourceDefinition(key="github", label="GitHub", base_dir=github_dir, default_selection=DEFAULT_GITHUB_SELECTION, selection_label="Selection", is_aggregate=False),
+        SourceDefinition(key="huggingface", label="Hugging Face", base_dir=huggingface_selection_dir, default_selection=DEFAULT_HF_REPO_TYPE, selection_label="Repo type", is_aggregate=False),
+        SourceDefinition(key="all", label="All sources", base_dir=request.data_dir, default_selection=DEFAULT_ALL_SELECTION, selection_label="Selection", is_aggregate=True),
     ]
 
 
@@ -263,13 +272,34 @@ def list_selection_dirs(request: ListSelectionDirsRequest) -> list[str]:
     return selection_dirs
 
 
+def resolve_huggingface_base_dir(base_dir: Path) -> Path:
+    default_dir: Path = base_dir / DEFAULT_HF_SELECTION
+    if default_dir.exists():
+        return default_dir
+    selection_dirs: list[str] = list_selection_dirs(ListSelectionDirsRequest(base_dir=base_dir))
+    if len(selection_dirs) > 0:
+        return base_dir / selection_dirs[0]
+    return default_dir
+
+
 def resolve_selection_options(request: ResolveSelectionOptionsRequest) -> SelectionOptions:
     if request.is_aggregate:
         return SelectionOptions(options=[request.default_selection], default_value=request.default_selection)
     options: list[str] = list_selection_dirs(ListSelectionDirsRequest(base_dir=request.base_dir))
+    if request.fallback_options is not None:
+        options = list(request.fallback_options)
+    if request.preferred_order is not None:
+        order_lookup: set[str] = set(options)
+        ordered: list[str] = [value for value in request.preferred_order if value in order_lookup]
+        remaining: list[str] = [value for value in options if value not in set(ordered)]
+        options = ordered + sorted(remaining)
+    if request.include_all and len(options) > 1:
+        if DEFAULT_ALL_OPTION not in options:
+            options = [DEFAULT_ALL_OPTION] + options
     if len(options) == 0:
         return SelectionOptions(options=[request.default_selection], default_value=request.default_selection)
-    return SelectionOptions(options=options, default_value=options[0])
+    default_value: str = request.default_selection if request.default_selection in options else options[0]
+    return SelectionOptions(options=options, default_value=default_value)
 
 
 def format_selection_label(selection_label: str) -> str:
@@ -383,7 +413,7 @@ def build_tab_layout(request: BuildTabLayoutRequest) -> Component:
             request.modules.html.H2(f"{request.source.label} notebooks"),
             request.modules.html.Div(
                 [
-                    request.modules.html.Div("Selection", style={"fontSize": "12px", "color": "#6b7280"}),
+                    request.modules.html.Div(request.source.selection_label, style={"fontSize": "12px", "color": "#6b7280"}),
                     request.modules.dcc.Dropdown(id=request.ids.selection_dropdown, options=selection_options, value=request.selection_options.default_value, clearable=False),
                 ],
                 style={"maxWidth": "320px"},
@@ -436,11 +466,19 @@ def update_source_tab(selection_label: str, source: SourceDefinition, modules: D
         empty_summary: list[Component] = build_metric_cards(MetricCardsRequest(modules=modules, metrics=[]))
         empty_figure: Figure = build_empty_figure(EmptyFigureRequest(message="No data available."))
         return empty_summary, empty_figure, [], [], "No selection provided."
-    selection_dir: Path = source.base_dir.resolve() if source.is_aggregate else (source.base_dir / selection_label).resolve()
+    if source.is_aggregate or selection_label == DEFAULT_ALL_OPTION:
+        selection_dir: Path = source.base_dir.resolve()
+    else:
+        selection_dir = (source.base_dir / selection_label).resolve()
     report: SelectionReport = build_selection_report(SelectionReportRequest(selection_dir=selection_dir, max_notebooks=config.max_notebooks))
     metrics: list[KpiMetric] = build_summary_metrics(SummaryMetricsRequest(library_report=report.library_report, extension_report=report.extension_report, skipped_notebooks=report.skipped_notebooks))
     summary_cards: list[Component] = build_metric_cards(MetricCardsRequest(modules=modules, metrics=metrics))
     selection_title: str = "All sources" if source.is_aggregate else format_selection_label(selection_label)
+    if selection_label == DEFAULT_ALL_OPTION and not source.is_aggregate:
+        selection_title = "All repo types" if source.key == "huggingface" else "All selections"
+    if source.key == "huggingface":
+        selection_root_label: str = format_selection_label(source.base_dir.name)
+        selection_title = f"{selection_title} ({selection_root_label})"
     library_title: str = f"Top 20 most used libraries (unique per notebook) — {selection_title}"
     library_figure: Figure = build_bar_chart(ChartBuildRequest(report=report.library_report, title=library_title, x_label="Library", max_items=config.max_items))
     library_rows: list[dict[str, int | float | str]] = build_usage_table_rows(UsageTableRequest(report=report.library_report))
@@ -468,7 +506,16 @@ def build_app(request: BuildAppRequest) -> Dash:
     ensure_dash()
     from dash import Dash, dcc, html, dash_table
     sources: list[SourceDefinition] = resolve_sources(ResolveSourcesRequest(data_dir=request.config.data_dir))
-    selection_options: dict[str, SelectionOptions] = {source.key: resolve_selection_options(ResolveSelectionOptionsRequest(base_dir=source.base_dir, default_selection=source.default_selection, is_aggregate=source.is_aggregate)) for source in sources}
+    selection_options: dict[str, SelectionOptions] = {}
+    for source in sources:
+        fallback_options: Sequence[str] | None = DEFAULT_HF_REPO_TYPES if source.key == "huggingface" else None
+        include_all: bool = source.key in ("kaggle", "huggingface")
+        preferred_order: Sequence[str] | None = None
+        if source.key == "kaggle":
+            preferred_order = KAGGLE_SELECTION_ORDER
+        if source.key == "huggingface":
+            preferred_order = DEFAULT_HF_REPO_TYPES
+        selection_options[source.key] = resolve_selection_options(ResolveSelectionOptionsRequest(base_dir=source.base_dir, default_selection=source.default_selection, is_aggregate=source.is_aggregate, fallback_options=fallback_options, include_all=include_all, preferred_order=preferred_order))
     component_ids: dict[str, SourceComponentIds] = {source.key: build_component_ids(ComponentIdsRequest(source_key=source.key)) for source in sources}
     modules: DashModules = DashModules(dcc=dcc, html=html, dash_table=dash_table)
     app: Dash = Dash(__name__)
