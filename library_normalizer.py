@@ -31,36 +31,151 @@ class NormalizeImportRequest:
 
 def default_normalizer_config() -> LibraryNormalizerConfig:
     mapping: dict[str, str] = {
-        "pil": "pillow",
-        "catboost.core": "catboost",
-        "cv2": "opencv",
-        "keras": "tensorflow",
-        "lightgbm.sklearn": "lightgbm",
-        "matplotlib.pyplot": "matplotlib",
-        "matplotlib": "matplotlib",
-        "numpy.random": "numpy",
-        "pandas.io": "pandas",
-        "pandas.tseries": "pandas",
-        "plotly.express": "plotly",
-        "plotly.graph_objects": "plotly",
-        "pytorch_lightning": "pytorch",
-        "scipy.stats": "scipy",
-        "skimage": "scikit-image",
-        "sklearn": "scikit-learn",
-        "sklearn.metrics": "scikit-learn",
-        "sklearn.model_selection": "scikit-learn",
-        "sklearn.preprocessing": "scikit-learn",
-        "statsmodels.api": "statsmodels",
-        "statsmodels.tsa": "statsmodels",
-        "tensorflow.compat": "tensorflow",
-        "tensorflow.keras": "tensorflow",
-        "torch": "pytorch",
-        "torchvision": "pytorch",
-        "torch.nn": "pytorch",
-        "xgboost.sklearn": "xgboost",
+    # =========================
+    # Core Scientific Stack
+    # =========================
+    "numpy": "numpy",
+    "numpy.random": "numpy",
+    "scipy": "scipy",
+    "scipy.stats": "scipy",
+    "scipy.sparse": "scipy",
+    "pandas": "pandas",
+    "pandas.io": "pandas",
+    "pandas.tseries": "pandas",
+    "matplotlib": "matplotlib",
+    "matplotlib.pyplot": "matplotlib",
+    "seaborn": "seaborn",
+    "plotly": "plotly",
+    "plotly.express": "plotly",
+    "plotly.graph_objects": "plotly",
+
+    # =========================
+    # Machine Learning
+    # =========================
+    "sklearn": "scikit-learn",
+    "sklearn.metrics": "scikit-learn",
+    "sklearn.model_selection": "scikit-learn",
+    "sklearn.preprocessing": "scikit-learn",
+    "sklearn.pipeline": "scikit-learn",
+    "sklearn.compose": "scikit-learn",
+
+    "xgboost": "xgboost",
+    "xgboost.sklearn": "xgboost",
+    "lightgbm": "lightgbm",
+    "lightgbm.sklearn": "lightgbm",
+    "catboost": "catboost",
+    "catboost.core": "catboost",
+
+    "imblearn": "imbalanced-learn",
+
+    # =========================
+    # Deep Learning
+    # =========================
+    "torch": "torch",
+    "torch.nn": "torch",
+    "torch.optim": "torch",
+    "torch.utils.data": "torch",
+
+    "torchvision": "torchvision",
+    "torchvision.transforms": "torchvision",
+    "torchvision.datasets": "torchvision",
+
+    "torchaudio": "torchaudio",
+    "torchtext": "torchtext",
+
+    "pytorch_lightning": "pytorch-lightning",
+    "torchmetrics": "torchmetrics",
+
+    "tensorflow": "tensorflow",
+    "tensorflow.keras": "tensorflow",
+    "tensorflow.compat": "tensorflow",
+
+    "keras": "keras",
+
+    # =========================
+    # NLP
+    # =========================
+    "transformers": "transformers",
+    "datasets": "datasets",
+    "tokenizers": "tokenizers",
+    "spacy": "spacy",
+    "nltk": "nltk",
+    "sentence_transformers": "sentence-transformers",
+
+    # =========================
+    # Computer Vision
+    # =========================
+    "cv2": "opencv-python",
+    "PIL": "pillow",
+    "pil": "pillow",
+    "skimage": "scikit-image",
+    "albumentations": "albumentations",
+
+    # =========================
+    # Statistics / Econometrics
+    # =========================
+    "statsmodels": "statsmodels",
+    "statsmodels.api": "statsmodels",
+    "statsmodels.tsa": "statsmodels",
+    "pymc": "pymc",
+    "arviz": "arviz",
+
+    # =========================
+    # Model Interpretation
+    # =========================
+    "shap": "shap",
+    "lime": "lime",
+
+    # =========================
+    # Hyperparameter Optimization
+    # =========================
+    "optuna": "optuna",
+    "hyperopt": "hyperopt",
+    "ray.tune": "ray",
+
+    # =========================
+    # Distributed / Big Data
+    # =========================
+    "dask": "dask",
+    "dask.dataframe": "dask",
+    "pyspark": "pyspark",
+
+    # =========================
+    # Experiment Tracking
+    # =========================
+    "mlflow": "mlflow",
+    "wandb": "wandb",
+    "tensorboard": "tensorboard",
+
+    # =========================
+    # API / Deployment
+    # =========================
+    "fastapi": "fastapi",
+    "flask": "flask",
+    "uvicorn": "uvicorn",
+    "gradio": "gradio",
+    "streamlit": "streamlit",
+
+    # =========================
+    # Utilities
+    # =========================
+    "tqdm": "tqdm",
+    "joblib": "joblib",
+    "yaml": "pyyaml",
+    "dotenv": "python-dotenv",
+    "requests": "requests",
+    "beautifulsoup4": "beautifulsoup4",
+    "bs4": "beautifulsoup4",
+
+    # =========================
+    # Google Ecosystem
+    # =========================
+    "google.colab": "google-colab",
+    "google.generativeai": "google-generativeai",
     }
     excluded_packages: set[str] = {
         "argparse",
+        "colab",
         "collections",
         "learntools",
         "copy",
@@ -69,12 +184,16 @@ def default_normalizer_config() -> LibraryNormalizerConfig:
         "dataclasses",
         "datetime",
         "functools",
+        "gc",
         "glob",
+        "io",
+        "ipython",
         "json",
         "kaggle",
         "kagglehub",
         "kaggle_datasets",   
         "kaggle_secrets",
+        "kaggle_evaluation",
         "logging",
         "os",
         "pathlib",
@@ -90,6 +209,7 @@ def default_normalizer_config() -> LibraryNormalizerConfig:
         "textwrap",
         "time",
         "typing",
+        "utils",
         "warnings",
     }
     return LibraryNormalizerConfig(prefix_mapping=mapping, excluded_packages=excluded_packages)

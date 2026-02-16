@@ -304,13 +304,7 @@ def render_plots(report: AppReport) -> None:
     except RuntimeError as exc:
         print(str(exc))
         return
-    if len(report.extension_report.usage) > 0:
-        extension_title: str = f"Most used Jupyter extensions (unique per notebook) Analyzed {total_notebooks} {selection_label} {source_label} notebooks"
-        extension_max_items: int = len(report.extension_report.usage)
-        try:
-            render_usage_report(PlotReportRequest(report=report.extension_report, title=extension_title, max_items=extension_max_items, x_label="Extension"))
-        except RuntimeError as exc:
-            print(str(exc))
+
 
 
 def main() -> None:
