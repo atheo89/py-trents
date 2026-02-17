@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from library_normalizer import NormalizeImportsRequest, default_normalizer_config, normalize_imports
-from metrics import NotebookFeatureUsage, UsageMetricsRequest, UsageReport, compute_usage_metrics
+from metrics import FeatureUsage, NotebookFeatureUsage, UsageMetricsRequest, UsageReport, compute_usage_metrics
 from notebook_parser import NotebookParseRequest, parse_notebook
 from visualization import build_chart_data, ensure_plotly
 
@@ -34,6 +34,126 @@ DEFAULT_HF_REPO_TYPES: list[str] = ["model", "dataset", "space"]
 DEFAULT_ALL_OPTION: str = "all"
 DEFAULT_ALL_SELECTION: str = "all-sources"
 KAGGLE_SELECTION_ORDER: list[str] = ["top", "hotness", "latest"]
+FAMILY_DISPLAY_ORDER: list[str] = [
+    "Data Science",
+    "Machine Learning",
+    "Deep Learning",
+    "Natural Language Processing",
+    "Agentic",
+    "Computer Vision",
+    "Statistics",
+    "Model Interpretation",
+    "Hyperparameter Optimization",
+    "Distributed Computing",
+    "Experiment Tracking",
+    "Deployment and Apps",
+]
+FAMILY_ORDER_LOOKUP: dict[str, int] = {family: index for index, family in enumerate(FAMILY_DISPLAY_ORDER)}
+DEFAULT_FAMILY: str = "Other"
+DEFAULT_FAMILY_COLOR: str = "#6b7280"
+FAMILY_COLOR_MAPPING: dict[str, str] = {
+    "Data Science": "#2563eb",
+    "Machine Learning": "#7c3aed",
+    "Deep Learning": "#db2777",
+    "Natural Language Processing": "#0ea5e9",
+    "Agentic": "#0891b2",
+    "Computer Vision": "#f97316",
+    "Statistics": "#0d9488",
+    "Model Interpretation": "#b45309",
+    "Hyperparameter Optimization": "#22c55e",
+    "Distributed Computing": "#9333ea",
+    "Experiment Tracking": "#1d4ed8",
+    "Deployment and Apps": "#dc2626",
+}
+PACKAGE_FAMILY_MAPPING: dict[str, str] = {
+    "numpy": "Data Science",
+    "scipy": "Data Science",
+    "pandas": "Data Science",
+    "matplotlib": "Data Science",
+    "seaborn": "Data Science",
+    "plotly": "Data Science",
+    "scikit-learn": "Machine Learning",
+    "xgboost": "Machine Learning",
+    "lightgbm": "Machine Learning",
+    "catboost": "Machine Learning",
+    "imbalanced-learn": "Machine Learning",
+    "torch": "Deep Learning",
+    "torchvision": "Deep Learning",
+    "torchaudio": "Deep Learning",
+    "torchtext": "Deep Learning",
+    "pytorch-lightning": "Deep Learning",
+    "torchmetrics": "Deep Learning",
+    "tensorflow": "Deep Learning",
+    "keras": "Deep Learning",
+    "transformers": "Natural Language Processing",
+    "datasets": "Natural Language Processing",
+    "tokenizers": "Natural Language Processing",
+    "spacy": "Natural Language Processing",
+    "nltk": "Natural Language Processing",
+    "sentence-transformers": "Natural Language Processing",
+    "langchain": "Agentic",
+    "langchain-core": "Agentic",
+    "langchain-community": "Agentic",
+    "langchain-openai": "Agentic",
+    "langchain-anthropic": "Agentic",
+    "langchain-google-genai": "Agentic",
+    "langgraph": "Agentic",
+    "llama-index": "Agentic",
+    "crewai": "Agentic",
+    "autogen": "Agentic",
+    "semantic-kernel": "Agentic",
+    "haystack": "Agentic",
+    "dspy": "Agentic",
+    "pydantic-ai": "Agentic",
+    "smolagents": "Agentic",
+    "agno": "Agentic",
+    "opencv-python": "Computer Vision",
+    "pillow": "Computer Vision",
+    "scikit-image": "Computer Vision",
+    "albumentations": "Computer Vision",
+    "statsmodels": "Statistics",
+    "pymc": "Statistics",
+    "arviz": "Statistics",
+    "shap": "Model Interpretation",
+    "lime": "Model Interpretation",
+    "optuna": "Hyperparameter Optimization",
+    "hyperopt": "Hyperparameter Optimization",
+    "ray": "Hyperparameter Optimization",
+    "dask": "Distributed Computing",
+    "pyspark": "Distributed Computing",
+    "mlflow": "Experiment Tracking",
+    "wandb": "Experiment Tracking",
+    "tensorboard": "Experiment Tracking",
+    "fastapi": "Deployment and Apps",
+    "flask": "Deployment and Apps",
+    "uvicorn": "Deployment and Apps",
+    "gradio": "Deployment and Apps",
+    "streamlit": "Deployment and Apps",
+    "tqdm": "Utilities",
+    "joblib": "Utilities",
+    "pyyaml": "Utilities",
+    "python-dotenv": "Utilities",
+    "requests": "Utilities",
+    "beautifulsoup4": "Utilities",
+    "google-colab": "Utilities",
+    "google-generativeai": "Utilities",
+}
+FAMILY_PREFIX_MAPPING: list[tuple[str, str]] = [
+    ("langchain", "Agentic"),
+    ("langgraph", "Agentic"),
+    ("llama_index", "Agentic"),
+    ("llama-index", "Agentic"),
+    ("crewai", "Agentic"),
+    ("autogen", "Agentic"),
+    ("semantic_kernel", "Agentic"),
+    ("semantic-kernel", "Agentic"),
+    ("haystack", "Agentic"),
+    ("dspy", "Agentic"),
+    ("pydantic_ai", "Agentic"),
+    ("pydantic-ai", "Agentic"),
+    ("smolagents", "Agentic"),
+    ("agno", "Agentic"),
+]
 
 APP_STYLE: dict[str, str] = {"fontFamily": "Arial, sans-serif", "padding": "16px"}
 CARD_CONTAINER_STYLE: dict[str, str] = {"display": "flex", "gap": "12px", "flexWrap": "wrap", "marginTop": "12px"}
@@ -41,7 +161,13 @@ CARD_STYLE: dict[str, str] = {"border": "1px solid #e5e7eb", "borderRadius": "8p
 SECTION_STYLE: dict[str, str] = {"marginTop": "16px"}
 TABLE_STYLE: dict[str, str] = {"marginTop": "8px"}
 
-TABLE_COLUMNS: list[dict[str, str]] = [
+LIBRARY_TABLE_COLUMNS: list[dict[str, str]] = [
+    {"name": "Name", "id": "name"},
+    {"name": "Family", "id": "family"},
+    {"name": "Notebook Count", "id": "count"},
+    {"name": "Usage %", "id": "percent"},
+]
+EXTENSION_TABLE_COLUMNS: list[dict[str, str]] = [
     {"name": "Name", "id": "name"},
     {"name": "Notebook Count", "id": "count"},
     {"name": "Usage %", "id": "percent"},
@@ -104,6 +230,7 @@ class SourceComponentIds:
     selection_dropdown: str
     summary_container: str
     library_chart: str
+    family_chart: str
     library_table: str
     extension_table: str
     status_message: str
@@ -201,6 +328,7 @@ class MetricCardsRequest:
 @dataclass(frozen=True)
 class UsageTableRequest:
     report: UsageReport
+    include_family: bool = False
 
 
 @dataclass(frozen=True)
@@ -209,6 +337,19 @@ class ChartBuildRequest:
     title: str
     x_label: str
     max_items: int
+
+
+@dataclass(frozen=True)
+class FamilyChartBuildRequest:
+    report: UsageReport
+    title: str
+    max_items: int
+
+
+@dataclass(frozen=True)
+class FamilyUsage:
+    usage: FeatureUsage
+    family: str
 
 
 @dataclass(frozen=True)
@@ -312,6 +453,7 @@ def build_component_ids(request: ComponentIdsRequest) -> SourceComponentIds:
         selection_dropdown=f"{source_key}-selection",
         summary_container=f"{source_key}-summary",
         library_chart=f"{source_key}-library-chart",
+        family_chart=f"{source_key}-family-chart",
         library_table=f"{source_key}-library-table",
         extension_table=f"{source_key}-extension-table",
         status_message=f"{source_key}-status",
@@ -380,8 +522,14 @@ def build_metric_cards(request: MetricCardsRequest) -> list[Component]:
 
 def build_usage_table_rows(request: UsageTableRequest) -> list[dict[str, int | float | str]]:
     rows: list[dict[str, int | float | str]] = []
-    for usage in request.report.usage:
-        rows.append({"name": usage.name, "count": usage.notebook_count, "percent": usage.usage_percent})
+    usages: list[FeatureUsage] = list(request.report.usage)
+    if request.include_family:
+        usages.sort(key=lambda usage: (resolve_family_order(resolve_family_name(usage.name)), -usage.notebook_count, usage.name))
+    for usage in usages:
+        row: dict[str, int | float | str] = {"name": usage.name, "count": usage.notebook_count, "percent": usage.usage_percent}
+        if request.include_family:
+            row["family"] = resolve_family_name(usage.name)
+        rows.append(row)
     return rows
 
 
@@ -403,6 +551,58 @@ def build_bar_chart(request: ChartBuildRequest) -> Figure:
     percent_labels: list[str] = [f"{value:.2f}%" for value in percents]
     fig: Figure = go.Figure(go.Bar(x=counts, y=labels, orientation="h", text=percent_labels, textposition="outside", marker_color="#2563eb", cliponaxis=False))
     fig.update_layout(title=request.title, xaxis_title="Notebook count", yaxis_title=request.x_label, yaxis={"autorange": "reversed"}, margin={"l": 80, "r": 20, "t": 60, "b": 40})
+    return fig
+
+
+def resolve_family_name(library_name: str) -> str:
+    normalized_name: str = library_name.strip().lower()
+    mapped_family: str | None = PACKAGE_FAMILY_MAPPING.get(normalized_name)
+    if mapped_family is not None:
+        return mapped_family
+    for prefix, family_name in FAMILY_PREFIX_MAPPING:
+        if normalized_name == prefix:
+            return family_name
+        if normalized_name.startswith(f"{prefix}.") or normalized_name.startswith(f"{prefix}_") or normalized_name.startswith(f"{prefix}-"):
+            return family_name
+    return DEFAULT_FAMILY
+
+
+def resolve_family_order(family_name: str) -> int:
+    return FAMILY_ORDER_LOOKUP.get(family_name, len(FAMILY_DISPLAY_ORDER))
+
+
+def build_family_grouped_bar_chart(request: FamilyChartBuildRequest) -> Figure:
+    selected_usages: list[FeatureUsage] = list(request.report.usage)[:request.max_items]
+    if len(selected_usages) == 0:
+        return build_empty_figure(EmptyFigureRequest(message="No grouped family data available."))
+    family_usages: list[FamilyUsage] = []
+    for usage in selected_usages:
+        family_name: str = resolve_family_name(usage.name)
+        family_usages.append(FamilyUsage(usage=usage, family=family_name))
+    family_usages.sort(key=lambda item: (resolve_family_order(item.family), -item.usage.notebook_count, item.usage.name))
+    ordered_labels: list[str] = [item.usage.name for item in family_usages]
+    grouped_by_family: dict[str, list[FamilyUsage]] = {}
+    for family_usage in family_usages:
+        grouped_by_family.setdefault(family_usage.family, []).append(family_usage)
+    import plotly.graph_objects as go
+    fig: Figure = go.Figure()
+    ordered_families: list[str] = sorted(grouped_by_family.keys(), key=resolve_family_order)
+    for family_name in ordered_families:
+        family_items: list[FamilyUsage] = grouped_by_family[family_name]
+        labels: list[str] = [item.usage.name for item in family_items]
+        counts: list[int] = [item.usage.notebook_count for item in family_items]
+        percent_labels: list[str] = [f"{item.usage.usage_percent:.2f}%" for item in family_items]
+        family_color: str = FAMILY_COLOR_MAPPING.get(family_name, DEFAULT_FAMILY_COLOR)
+        fig.add_trace(go.Bar(name=family_name, x=counts, y=labels, orientation="h", text=percent_labels, textposition="outside", marker_color=family_color, cliponaxis=False, hovertemplate="<b>%{y}</b><br>Notebook count: %{x}<br>Usage: %{text}<extra>%{fullData.name}</extra>"))
+    fig.update_layout(
+        title=request.title,
+        xaxis_title="Notebook count",
+        yaxis_title="Library",
+        yaxis={"autorange": "reversed", "categoryorder": "array", "categoryarray": ordered_labels},
+        margin={"l": 120, "r": 20, "t": 60, "b": 40},
+        showlegend=True,
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0.0},
+    )
     return fig
 
 
@@ -429,15 +629,22 @@ def build_tab_layout(request: BuildTabLayoutRequest) -> Component:
             ),
             request.modules.html.Div(
                 [
-                    request.modules.html.H3("Full list of libraries"),
-                    request.modules.dash_table.DataTable(id=request.ids.library_table, columns=TABLE_COLUMNS, data=[], page_size=15, sort_action="native", filter_action="native", style_table=TABLE_STYLE),
+                    request.modules.html.H3("Top libraries grouped by family (All data)"),
+                    request.modules.dcc.Loading(request.modules.dcc.Graph(id=request.ids.family_chart), type="default"),
                 ],
                 style=SECTION_STYLE,
             ),
             request.modules.html.Div(
                 [
-                    request.modules.html.H3("Full list of extensions"),
-                    request.modules.dash_table.DataTable(id=request.ids.extension_table, columns=TABLE_COLUMNS, data=[], page_size=15, sort_action="native", filter_action="native", style_table=TABLE_STYLE),
+                    request.modules.html.H3("Complete list of libraries"),
+                    request.modules.dash_table.DataTable(id=request.ids.library_table, columns=LIBRARY_TABLE_COLUMNS, data=[], page_size=15, sort_action="native", filter_action="native", style_table=TABLE_STYLE),
+                ],
+                style=SECTION_STYLE,
+            ),
+            request.modules.html.Div(
+                [
+                    request.modules.html.H3("Complete list of extensions"),
+                    request.modules.dash_table.DataTable(id=request.ids.extension_table, columns=EXTENSION_TABLE_COLUMNS, data=[], page_size=15, sort_action="native", filter_action="native", style_table=TABLE_STYLE),
                 ],
                 style=SECTION_STYLE,
             ),
@@ -461,11 +668,11 @@ def build_status_message(selection_dir: Path, analyzed: int, skipped: int) -> st
     return f"Analyzed {analyzed} notebooks. Skipped {skipped} invalid notebooks."
 
 
-def update_source_tab(selection_label: str, source: SourceDefinition, modules: DashModules, config: DashboardConfig) -> tuple[list[Component], Figure, list[dict[str, int | float | str]], list[dict[str, int | float | str]], str]:
+def update_source_tab(selection_label: str, source: SourceDefinition, modules: DashModules, config: DashboardConfig) -> tuple[list[Component], Figure, Figure, list[dict[str, int | float | str]], list[dict[str, int | float | str]], str]:
     if selection_label is None or selection_label.strip() == "":
         empty_summary: list[Component] = build_metric_cards(MetricCardsRequest(modules=modules, metrics=[]))
         empty_figure: Figure = build_empty_figure(EmptyFigureRequest(message="No data available."))
-        return empty_summary, empty_figure, [], [], "No selection provided."
+        return empty_summary, empty_figure, empty_figure, [], [], "No selection provided."
     if source.is_aggregate or selection_label == DEFAULT_ALL_OPTION:
         selection_dir: Path = source.base_dir.resolve()
     else:
@@ -481,10 +688,14 @@ def update_source_tab(selection_label: str, source: SourceDefinition, modules: D
         selection_title = f"{selection_title} ({selection_root_label})"
     library_title: str = f"Top 20 most used libraries (unique per notebook) — {selection_title}"
     library_figure: Figure = build_bar_chart(ChartBuildRequest(report=report.library_report, title=library_title, x_label="Library", max_items=config.max_items))
-    library_rows: list[dict[str, int | float | str]] = build_usage_table_rows(UsageTableRequest(report=report.library_report))
+    all_selection_dir: Path = source.base_dir.resolve()
+    all_report: SelectionReport = report if all_selection_dir == selection_dir else build_selection_report(SelectionReportRequest(selection_dir=all_selection_dir, max_notebooks=config.max_notebooks))
+    family_chart_title: str = f"Top {config.max_items} libraries grouped by family (All data) — {source.label}"
+    family_figure: Figure = build_family_grouped_bar_chart(FamilyChartBuildRequest(report=all_report.library_report, title=family_chart_title, max_items=config.max_items))
+    library_rows: list[dict[str, int | float | str]] = build_usage_table_rows(UsageTableRequest(report=report.library_report, include_family=True))
     extension_rows: list[dict[str, int | float | str]] = build_usage_table_rows(UsageTableRequest(report=report.extension_report))
     status_message: str = build_status_message(selection_dir=selection_dir, analyzed=report.analyzed_notebooks, skipped=report.skipped_notebooks)
-    return summary_cards, library_figure, library_rows, extension_rows, status_message
+    return summary_cards, library_figure, family_figure, library_rows, extension_rows, status_message
 
 
 def execute_register_callbacks(request: RegisterCallbacksRequest) -> None:
@@ -495,6 +706,7 @@ def execute_register_callbacks(request: RegisterCallbacksRequest) -> None:
         request.app.callback(
             Output(ids.summary_container, "children"),
             Output(ids.library_chart, "figure"),
+            Output(ids.family_chart, "figure"),
             Output(ids.library_table, "data"),
             Output(ids.extension_table, "data"),
             Output(ids.status_message, "children"),
