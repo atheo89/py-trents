@@ -4,7 +4,7 @@ Analyze public notebooks and rank the most commonly used Python libraries (uniqu
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.12+
 - Kaggle API (for Kaggle source): `pip install kaggle`
 - Plotly (optional, for charts): `pip install plotly`
 
@@ -100,7 +100,7 @@ Most used python libraries (unique per notebook) Analyzed 50 most-liked huggingf
 Run the dashboard after you have downloaded notebooks with `main.py`.
 
 ```bash
-pip install dash plotly
+pip install dash "plotly[express]"
 python3 dashboard.py --data-dir data
 ```
 
@@ -118,6 +118,21 @@ data/huggingface_notebooks/
 ```
 
 Each source has its own tab with library usage charts plus full tables for libraries and extensions. The Hugging Face tab lets you switch between repo types (model/dataset/space), and Kaggle/Hugging Face include an "All" option to aggregate their subcategories. A fourth tab aggregates all downloaded notebooks across sources.
+
+### Run dashboard in Docker (data bundled in image)
+
+```bash
+podman run --rm -p 8051:8051 quay.io/rh_ee_atheodor/lib-analysis-dashboard:v1
+```
+
+Open: `http://localhost:8051`
+
+
+### Build 
+```bash
+podman build -t quay.io/rh_ee_atheodor/lib-analysis-dashboard:v1 .
+podman push quay.io/rh_ee_atheodor/lib-analysis-dashboard:v1
+```
 
 ## Notes
 

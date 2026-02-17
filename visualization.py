@@ -18,7 +18,7 @@ def ensure_plotly() -> None:
     try:
         import plotly.express as px
     except ImportError as exc:
-        raise RuntimeError("Plotly is not installed. Run `pip install plotly`.") from exc
+        raise RuntimeError('Plotly Express dependencies are missing. Run `pip install "plotly[express]"`.') from exc
     _ = px
 
 
