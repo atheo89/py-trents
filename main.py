@@ -53,6 +53,7 @@ class SourceType(Enum):
 DEFAULT_GITHUB_QUERY: str = "extension:ipynb"
 DEFAULT_HF_SORT: str = "likes"
 DEFAULT_HF_REPO_TYPES: list[str] = ["model", "dataset", "space"]
+DEFAULT_MAX_NOTEBOOKS: int = 50
 
 
 def parse_selection_type(raw_value: str) -> SelectionType:
@@ -116,7 +117,7 @@ def parse_args(request: ParseArgsRequest) -> AppConfig:
     parser: argparse.ArgumentParser = argparse.ArgumentParser(description="Analyze notebooks for library usage.")
     parser.add_argument("--source", choices=[source.value for source in SourceType], default=SourceType.KAGGLE.value)
     parser.add_argument("--selection", choices=[selection.value for selection in SelectionType], default=SelectionType.TOP.value)
-    parser.add_argument("--max-notebooks", type=int, default=50)
+    parser.add_argument("--max-notebooks", type=int, default=None)
     parser.add_argument("--competition", type=str, default="")
     parser.add_argument("--output-dir", type=str, default="data")
     parser.add_argument("--sort-by", type=str, default="")
@@ -131,7 +132,13 @@ def parse_args(request: ParseArgsRequest) -> AppConfig:
     sort_by_value: str = str(args.sort_by)
     sort_by: str | None = sort_by_value.strip() if sort_by_value.strip() != "" else None
     output_dir: Path = Path(str(args.output_dir)).expanduser().resolve()
-    max_notebooks: int = int(args.max_notebooks)
+    max_notebooks_value: int | None = args.max_notebooks if isinstance(args.max_notebooks, int) else None
+    if max_notebooks_value is None:
+        max_notebooks = 0 if source == SourceType.HUGGINGFACE else DEFAULT_MAX_NOTEBOOKS
+    else:
+        max_notebooks = int(max_notebooks_value)
+    if max_notebooks < 0:
+        raise ValueError("max_notebooks must be >= 0.")
     github_query: str = str(args.github_query).strip()
     if github_query == "":
         github_query = DEFAULT_GITHUB_QUERY
@@ -216,7 +223,7 @@ def collect_valid_usages(notebook_paths: Sequence[Path], normalizer_config: obje
                     category_library_usages.setdefault(category_key, []).append(library_usage)
                 if category_extension_usages is not None:
                     category_extension_usages.setdefault(category_key, []).append(extension_usage)
-        if len(library_usages) >= target_count:
+        if target_count > 0 and len(library_usages) >= target_count:
             break
     return processed_any
 
@@ -225,10 +232,6 @@ def resolve_github_target_max(requested_max: int, attempt: int) -> int:
     buffer_size: int = max(5, requested_max // 5)
     return min(1000, requested_max + buffer_size * attempt)
 
-
-def resolve_hf_target_max(requested_max: int, attempt: int) -> int:
-    buffer_size: int = max(5, requested_max // 5)
-    return requested_max + buffer_size * attempt
 
 def run_github_pipeline(config: AppConfig) -> AppReport:
     if config.max_notebooks < 1:
@@ -255,8 +258,6 @@ def run_github_pipeline(config: AppConfig) -> AppReport:
 
 
 def run_huggingface_pipeline(config: AppConfig) -> AppReport:
-    if config.max_notebooks < 1:
-        raise ValueError("max_notebooks must be >= 1.")
     selection_label: str = build_hf_selection_label(config.hf_sort)
     selection_output_dir: Path = resolve_huggingface_output_dir(config.output_dir, selection_label)
     normalizer_config = default_normalizer_config()
@@ -265,20 +266,13 @@ def run_huggingface_pipeline(config: AppConfig) -> AppReport:
     category_library_usages: dict[str, list[NotebookFeatureUsage]] = {}
     category_extension_usages: dict[str, list[NotebookFeatureUsage]] = {}
     processed_paths: set[Path] = set()
-    attempt: int = 1
-    max_attempts: int = 5
-    while len(library_usages) < config.max_notebooks and attempt <= max_attempts:
-        target_max: int = resolve_hf_target_max(config.max_notebooks, attempt)
-        selection: HuggingFaceSelection = HuggingFaceSelection(max_notebooks=target_max, output_dir=selection_output_dir, selection_label=selection_label, repo_types=config.hf_repo_types, sort_by=config.hf_sort)
-        download_result = download_huggingface_notebooks(selection)
-        path_to_category: dict[Path, str] = {}
-        for repo_type, notebook_paths in download_result.notebook_paths_by_type.items():
-            for notebook_path in notebook_paths:
-                path_to_category[notebook_path] = repo_type
-        processed_any: bool = collect_valid_usages(download_result.notebook_paths, normalizer_config, library_usages, extension_usages, processed_paths, config.max_notebooks, path_to_category=path_to_category, category_library_usages=category_library_usages, category_extension_usages=category_extension_usages)
-        if not processed_any:
-            break
-        attempt += 1
+    selection: HuggingFaceSelection = HuggingFaceSelection(max_notebooks=config.max_notebooks, output_dir=selection_output_dir, selection_label=selection_label, repo_types=config.hf_repo_types, sort_by=config.hf_sort)
+    download_result = download_huggingface_notebooks(selection)
+    path_to_category: dict[Path, str] = {}
+    for repo_type, notebook_paths in download_result.notebook_paths_by_type.items():
+        for notebook_path in notebook_paths:
+            path_to_category[notebook_path] = repo_type
+    collect_valid_usages(download_result.notebook_paths, normalizer_config, library_usages, extension_usages, processed_paths, config.max_notebooks, path_to_category=path_to_category, category_library_usages=category_library_usages, category_extension_usages=category_extension_usages)
     library_report: UsageReport = compute_usage_metrics(UsageMetricsRequest(notebook_usages=library_usages))
     extension_report: UsageReport = compute_usage_metrics(UsageMetricsRequest(notebook_usages=extension_usages))
     category_library_reports: dict[str, UsageReport] = {}
@@ -299,7 +293,8 @@ def print_report(report: AppReport) -> None:
     total_notebooks: int = report.library_report.total_notebooks
     selection_label: str = report.selection_label.replace("-", " ").title()
     source_label: str = format_source_label(report.source_name)
-    print(f"{source_label} notebook usage — Selection: {selection_label}, Requested: {report.requested_max}, Analyzed: {total_notebooks}")
+    requested_label: str = "all" if report.requested_max <= 0 else str(report.requested_max)
+    print(f"{source_label} notebook usage — Selection: {selection_label}, Requested: {requested_label}, Analyzed: {total_notebooks}")
     if total_notebooks == 0:
         print("No notebooks were analyzed.")
         return

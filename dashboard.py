@@ -29,8 +29,10 @@ DEFAULT_MAX_NOTEBOOKS: int = 0
 DEFAULT_KAGGLE_SELECTION: str = "top"
 DEFAULT_GITHUB_SELECTION: str = "most-starred"
 DEFAULT_HF_SELECTION: str = "most-liked"
-DEFAULT_HF_REPO_TYPE: str = "model"
-DEFAULT_HF_REPO_TYPES: list[str] = ["model", "dataset", "space"]
+DEFAULT_HF_SELECTION_ORDER: list[str] = ["most-liked", "most-downloaded", "trending", "most-created_at", "most-last_modified"]
+SELECTION_LABEL_OVERRIDES: dict[str, str] = {
+    "most-created_at": "Latest",
+}
 DEFAULT_ALL_OPTION: str = "all"
 DEFAULT_ALL_SELECTION: str = "all-sources"
 KAGGLE_SELECTION_ORDER: list[str] = ["top", "hotness", "latest"]
@@ -455,11 +457,10 @@ def resolve_sources(request: ResolveSourcesRequest) -> list[SourceDefinition]:
     kaggle_dir: Path = request.data_dir / "kaggle_notebooks"
     github_dir: Path = request.data_dir / "github_notebooks"
     huggingface_dir: Path = request.data_dir / "huggingface_notebooks"
-    huggingface_selection_dir: Path = resolve_huggingface_base_dir(huggingface_dir)
     return [
         SourceDefinition(key="kaggle", label="Kaggle", base_dir=kaggle_dir, default_selection=DEFAULT_KAGGLE_SELECTION, selection_label="Selection", is_aggregate=False),
         SourceDefinition(key="github", label="GitHub", base_dir=github_dir, default_selection=DEFAULT_GITHUB_SELECTION, selection_label="Selection", is_aggregate=False),
-        SourceDefinition(key="huggingface", label="Hugging Face", base_dir=huggingface_selection_dir, default_selection=DEFAULT_HF_REPO_TYPE, selection_label="Repo type", is_aggregate=False),
+        SourceDefinition(key="huggingface", label="Hugging Face", base_dir=huggingface_dir, default_selection=DEFAULT_HF_SELECTION, selection_label="Sort category", is_aggregate=False),
         SourceDefinition(key="all", label="All sources", base_dir=request.data_dir, default_selection=DEFAULT_ALL_SELECTION, selection_label="Selection", is_aggregate=True),
     ]
 
@@ -470,16 +471,6 @@ def list_selection_dirs(request: ListSelectionDirsRequest) -> list[str]:
     selection_dirs: list[str] = [path.name for path in request.base_dir.iterdir() if path.is_dir()]
     selection_dirs.sort()
     return selection_dirs
-
-
-def resolve_huggingface_base_dir(base_dir: Path) -> Path:
-    default_dir: Path = base_dir / DEFAULT_HF_SELECTION
-    if default_dir.exists():
-        return default_dir
-    selection_dirs: list[str] = list_selection_dirs(ListSelectionDirsRequest(base_dir=base_dir))
-    if len(selection_dirs) > 0:
-        return base_dir / selection_dirs[0]
-    return default_dir
 
 
 def resolve_selection_options(request: ResolveSelectionOptionsRequest) -> SelectionOptions:
@@ -503,7 +494,11 @@ def resolve_selection_options(request: ResolveSelectionOptionsRequest) -> Select
 
 
 def format_selection_label(selection_label: str) -> str:
-    return selection_label.replace("-", " ").title()
+    normalized_label: str = selection_label.strip().lower()
+    override: str | None = SELECTION_LABEL_OVERRIDES.get(normalized_label)
+    if override is not None:
+        return override
+    return selection_label.replace("-", " ").replace("_", " ").title()
 
 
 def build_component_ids(request: ComponentIdsRequest) -> SourceComponentIds:
@@ -602,13 +597,75 @@ def build_empty_figure(request: EmptyFigureRequest) -> Figure:
     return fig
 
 
+def format_hex_color(red: int, green: int, blue: int) -> str:
+    return f"#{red:02x}{green:02x}{blue:02x}"
+
+
+def interpolate_color_channel(start_value: int, end_value: int, ratio: float) -> int:
+    return int(round(start_value + ((end_value - start_value) * ratio)))
+
+
+def build_gradient_colors(counts: Sequence[int], start_color: tuple[int, int, int], end_color: tuple[int, int, int]) -> list[str]:
+    if len(counts) == 0:
+        return []
+    max_count: int = max(counts)
+    min_count: int = min(counts)
+    if max_count == min_count:
+        return [format_hex_color(*start_color) for _ in counts]
+    range_count: int = max_count - min_count
+    colors: list[str] = []
+    for count in counts:
+        fade_ratio: float = (max_count - count) / range_count
+        red: int = interpolate_color_channel(start_color[0], end_color[0], fade_ratio)
+        green: int = interpolate_color_channel(start_color[1], end_color[1], fade_ratio)
+        blue: int = interpolate_color_channel(start_color[2], end_color[2], fade_ratio)
+        colors.append(format_hex_color(red, green, blue))
+    return colors
+
+
+def parse_hex_color(color: str) -> tuple[int, int, int]:
+    normalized: str = color.strip().removeprefix("#")
+    if len(normalized) == 3:
+        normalized = f"{normalized[0]}{normalized[0]}{normalized[1]}{normalized[1]}{normalized[2]}{normalized[2]}"
+    if len(normalized) != 6:
+        return (107, 114, 128)
+    try:
+        red: int = int(normalized[0:2], 16)
+        green: int = int(normalized[2:4], 16)
+        blue: int = int(normalized[4:6], 16)
+    except ValueError:
+        return (107, 114, 128)
+    return red, green, blue
+
+
+def mix_color(base_color: tuple[int, int, int], target_color: tuple[int, int, int], ratio: float) -> tuple[int, int, int]:
+    red: int = interpolate_color_channel(base_color[0], target_color[0], ratio)
+    green: int = interpolate_color_channel(base_color[1], target_color[1], ratio)
+    blue: int = interpolate_color_channel(base_color[2], target_color[2], ratio)
+    return red, green, blue
+
+
+def build_blue_gradient_colors(counts: Sequence[int]) -> list[str]:
+    dark_blue: tuple[int, int, int] = (30, 58, 138)
+    light_blue: tuple[int, int, int] = (191, 219, 254)
+    return build_gradient_colors(counts=counts, start_color=dark_blue, end_color=light_blue)
+
+
+def build_family_gradient_colors(counts: Sequence[int], family_color: str) -> list[str]:
+    base_color: tuple[int, int, int] = parse_hex_color(family_color)
+    dark_color: tuple[int, int, int] = mix_color(base_color=base_color, target_color=(0, 0, 0), ratio=0.2)
+    light_color: tuple[int, int, int] = mix_color(base_color=base_color, target_color=(255, 255, 255), ratio=0.65)
+    return build_gradient_colors(counts=counts, start_color=dark_color, end_color=light_color)
+
+
 def build_bar_chart(request: ChartBuildRequest) -> Figure:
     labels, counts, percents = build_chart_data(request.report.usage, request.max_items)
     if len(labels) == 0:
         return build_empty_figure(EmptyFigureRequest(message=f"No {request.x_label.lower()} data available."))
     import plotly.graph_objects as go
     percent_labels: list[str] = [f"{value:.2f}%" for value in percents]
-    fig: Figure = go.Figure(go.Bar(x=counts, y=labels, orientation="h", text=percent_labels, textposition="outside", marker_color="#2563eb", cliponaxis=False))
+    gradient_colors: list[str] = build_blue_gradient_colors(counts)
+    fig: Figure = go.Figure(go.Bar(x=counts, y=labels, orientation="h", text=percent_labels, textposition="outside", marker_color=gradient_colors, cliponaxis=False))
     fig.update_layout(title=request.title, xaxis_title="Notebook count", yaxis_title=request.x_label, yaxis={"autorange": "reversed"}, margin={"l": 80, "r": 20, "t": 60, "b": 40})
     return fig
 
@@ -630,29 +687,34 @@ def resolve_family_order(family_name: str) -> int:
     return FAMILY_ORDER_LOOKUP.get(family_name, len(FAMILY_DISPLAY_ORDER))
 
 
+def resolve_family_group_order(grouped_by_family: dict[str, list[FamilyUsage]]) -> list[str]:
+    return sorted(grouped_by_family.keys(), key=lambda family_name: (-sum(item.usage.notebook_count for item in grouped_by_family[family_name]), resolve_family_order(family_name), family_name.lower()))
+
+
 def build_family_grouped_bar_chart(request: FamilyChartBuildRequest) -> Figure:
     selected_usages: list[FeatureUsage] = list(request.report.usage)[:request.max_items]
     if len(selected_usages) == 0:
         return build_empty_figure(EmptyFigureRequest(message="No grouped family data available."))
-    family_usages: list[FamilyUsage] = []
+    grouped_by_family: dict[str, list[FamilyUsage]] = {}
     for usage in selected_usages:
         family_name: str = resolve_family_name(usage.name)
-        family_usages.append(FamilyUsage(usage=usage, family=family_name))
-    family_usages.sort(key=lambda item: (resolve_family_order(item.family), -item.usage.notebook_count, item.usage.name))
-    ordered_labels: list[str] = [item.usage.name for item in family_usages]
-    grouped_by_family: dict[str, list[FamilyUsage]] = {}
-    for family_usage in family_usages:
-        grouped_by_family.setdefault(family_usage.family, []).append(family_usage)
+        grouped_by_family.setdefault(family_name, []).append(FamilyUsage(usage=usage, family=family_name))
+    for family_items in grouped_by_family.values():
+        family_items.sort(key=lambda item: (-item.usage.notebook_count, item.usage.name))
+    ordered_families: list[str] = resolve_family_group_order(grouped_by_family)
+    ordered_labels: list[str] = []
+    for family_name in ordered_families:
+        ordered_labels.extend(item.usage.name for item in grouped_by_family[family_name])
     import plotly.graph_objects as go
     fig: Figure = go.Figure()
-    ordered_families: list[str] = sorted(grouped_by_family.keys(), key=resolve_family_order)
     for family_name in ordered_families:
         family_items: list[FamilyUsage] = grouped_by_family[family_name]
         labels: list[str] = [item.usage.name for item in family_items]
         counts: list[int] = [item.usage.notebook_count for item in family_items]
         percent_labels: list[str] = [f"{item.usage.usage_percent:.2f}%" for item in family_items]
         family_color: str = FAMILY_COLOR_MAPPING.get(family_name, DEFAULT_FAMILY_COLOR)
-        fig.add_trace(go.Bar(name=family_name, x=counts, y=labels, orientation="h", text=percent_labels, textposition="outside", marker_color=family_color, cliponaxis=False, hovertemplate="<b>%{y}</b><br>Notebook count: %{x}<br>Usage: %{text}<extra>%{fullData.name}</extra>"))
+        family_gradient_colors: list[str] = build_family_gradient_colors(counts=counts, family_color=family_color)
+        fig.add_trace(go.Bar(name=family_name, x=counts, y=labels, orientation="h", text=percent_labels, textposition="outside", marker_color=family_gradient_colors, cliponaxis=False, hovertemplate="<b>%{y}</b><br>Notebook count: %{x}<br>Usage: %{text}<extra>%{fullData.name}</extra>"))
     fig.update_layout(
         title=request.title,
         xaxis_title="Notebook count",
@@ -660,7 +722,7 @@ def build_family_grouped_bar_chart(request: FamilyChartBuildRequest) -> Figure:
         yaxis={"autorange": "reversed", "categoryorder": "array", "categoryarray": ordered_labels},
         margin={"l": 120, "r": 20, "t": 60, "b": 40},
         showlegend=True,
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0.0},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0.0, "traceorder": "normal"},
     )
     return fig
 
@@ -741,10 +803,7 @@ def update_source_tab(selection_label: str, source: SourceDefinition, modules: D
     summary_cards: list[Component] = build_metric_cards(MetricCardsRequest(modules=modules, metrics=metrics))
     selection_title: str = "All sources" if source.is_aggregate else format_selection_label(selection_label)
     if selection_label == DEFAULT_ALL_OPTION and not source.is_aggregate:
-        selection_title = "All repo types" if source.key == "huggingface" else "All selections"
-    if source.key == "huggingface":
-        selection_root_label: str = format_selection_label(source.base_dir.name)
-        selection_title = f"{selection_title} ({selection_root_label})"
+        selection_title = "All sort categories" if source.key == "huggingface" else "All selections"
     library_title: str = f"Top 20 most used libraries (unique per notebook) — {selection_title}"
     library_figure: Figure = build_bar_chart(ChartBuildRequest(report=report.library_report, title=library_title, x_label="Library", max_items=config.max_items))
     all_selection_dir: Path = source.base_dir.resolve()
@@ -779,13 +838,13 @@ def build_app(request: BuildAppRequest) -> Dash:
     sources: list[SourceDefinition] = resolve_sources(ResolveSourcesRequest(data_dir=request.config.data_dir))
     selection_options: dict[str, SelectionOptions] = {}
     for source in sources:
-        fallback_options: Sequence[str] | None = DEFAULT_HF_REPO_TYPES if source.key == "huggingface" else None
+        fallback_options: Sequence[str] | None = None
         include_all: bool = source.key in ("kaggle", "huggingface")
         preferred_order: Sequence[str] | None = None
         if source.key == "kaggle":
             preferred_order = KAGGLE_SELECTION_ORDER
         if source.key == "huggingface":
-            preferred_order = DEFAULT_HF_REPO_TYPES
+            preferred_order = DEFAULT_HF_SELECTION_ORDER
         selection_options[source.key] = resolve_selection_options(ResolveSelectionOptionsRequest(base_dir=source.base_dir, default_selection=source.default_selection, is_aggregate=source.is_aggregate, fallback_options=fallback_options, include_all=include_all, preferred_order=preferred_order))
     component_ids: dict[str, SourceComponentIds] = {source.key: build_component_ids(ComponentIdsRequest(source_key=source.key)) for source in sources}
     modules: DashModules = DashModules(dcc=dcc, html=html, dash_table=dash_table)

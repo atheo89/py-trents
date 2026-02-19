@@ -74,6 +74,23 @@ _MAX_REPO_PAGES: int = 20
 _MAX_RETRIES: int = 5
 _INITIAL_DELAY_SECONDS: float = 2.0
 _MAX_DELAY_SECONDS: float = 60.0
+_DEFAULT_SORT_FIELD: str = "likes"
+_SORT_FIELD_MAPPING: dict[str, str] = {
+    "likes": "likes",
+    "downloads": "downloads",
+    "trending": "trendingScore",
+    "trending_score": "trendingScore",
+    "trendingscore": "trendingScore",
+    "created_at": "createdAt",
+    "createdat": "createdAt",
+    "created": "createdAt",
+    "last_modified": "lastModified",
+    "lastmodified": "lastModified",
+    "updated_at": "lastModified",
+    "updatedat": "lastModified",
+    "last_updated": "lastModified",
+    "lastupdated": "lastModified",
+}
 
 
 def build_headers() -> dict[str, str]:
@@ -153,11 +170,20 @@ def fetch_json_with_headers(url: str) -> tuple[object, Mapping[str, str]]:
     return {}, {}
 
 
+def resolve_sort_field(sort_by: str) -> str:
+    normalized_sort: str = sort_by.strip()
+    if normalized_sort == "":
+        return _DEFAULT_SORT_FIELD
+    normalized_key: str = normalized_sort.lower().replace("-", "_")
+    return _SORT_FIELD_MAPPING.get(normalized_key, normalized_sort)
+
+
 def build_list_url(request: HuggingFaceListRequest) -> str:
     endpoint: str = resolve_list_endpoint(request.repo_type)
+    resolved_sort: str = resolve_sort_field(request.sort_by)
     params: dict[str, str | int] = {
         "limit": request.limit,
-        "sort": request.sort_by,
+        "sort": resolved_sort,
         "direction": -1,
     }
     if request.full:
@@ -236,7 +262,9 @@ def list_repos_paginated(request: HuggingFaceListRequest, repo_limit: int) -> Hu
     repos: list[HuggingFaceRepoRef] = []
     url: str | None = build_list_url(request)
     page: int = 1
-    while url is not None and len(repos) < repo_limit and page <= _MAX_REPO_PAGES:
+    while url is not None and (repo_limit <= 0 or len(repos) < repo_limit):
+        if repo_limit > 0 and page > _MAX_REPO_PAGES:
+            break
         response_value, headers = fetch_json_with_headers(url)
         if not isinstance(response_value, list):
             break
@@ -301,11 +329,15 @@ def collect_repo_refs(selection: HuggingFaceSelection) -> list[HuggingFaceRepoRe
 
 
 def resolve_repo_limit(selection: HuggingFaceSelection) -> int:
+    if selection.max_notebooks <= 0:
+        return 0
     target_limit: int = max(_DEFAULT_LIMIT, selection.max_notebooks * 30)
     return min(2000, target_limit)
 
 
 def resolve_page_limit(repo_limit: int) -> int:
+    if repo_limit <= 0:
+        return _DEFAULT_LIMIT
     return min(_DEFAULT_LIMIT, repo_limit)
 
 
@@ -331,6 +363,7 @@ def collect_notebook_refs(selection: HuggingFaceSelection) -> list[HuggingFaceNo
     print(f"Scanning {len(repo_refs)} repos for .ipynb files...")
     notebook_refs: list[HuggingFaceNotebookRef] = []
     seen_keys: set[str] = set()
+    target_notebooks: int = selection.max_notebooks
     for index, repo in enumerate(repo_refs, start=1):
         if index == 1 or index % 25 == 0:
             print(f"Checked {index}/{len(repo_refs)} repos, found {len(notebook_refs)} notebooks so far.")
@@ -353,6 +386,11 @@ def collect_notebook_refs(selection: HuggingFaceSelection) -> list[HuggingFaceNo
                 continue
             seen_keys.add(key)
             notebook_refs.append(HuggingFaceNotebookRef(repo_id=repo.repo_id, repo_type=repo.repo_type, path=sibling, likes=repo.likes, sha=repo_sha))
+            if target_notebooks > 0 and len(notebook_refs) >= target_notebooks:
+                break
+        if target_notebooks > 0 and len(notebook_refs) >= target_notebooks:
+            print(f"Reached requested notebook target ({target_notebooks}). Stopping repo scan early.")
+            break
     return notebook_refs
 
 
@@ -420,14 +458,16 @@ def get_dict(value: object) -> dict[str, object] | None:
 
 
 def download_notebooks(selection: HuggingFaceSelection) -> HuggingFaceDownloadResult:
-    if selection.max_notebooks < 1:
-        raise ValueError("max_notebooks must be >= 1.")
     selection.output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Collecting Hugging Face notebooks ({selection.selection_label})...")
     notebook_refs: list[HuggingFaceNotebookRef] = collect_notebook_refs(selection)
-    print(f"Found {len(notebook_refs)} notebook candidates. Downloading top {selection.max_notebooks}...")
+    max_notebooks: int = selection.max_notebooks
+    if max_notebooks > 0:
+        print(f"Found {len(notebook_refs)} notebook candidates. Downloading top {max_notebooks}...")
+    else:
+        print(f"Found {len(notebook_refs)} notebook candidates. Downloading all candidates...")
     sorted_refs: list[HuggingFaceNotebookRef] = sorted(notebook_refs, key=lambda ref: (-ref.likes, ref.repo_id, ref.path))
-    selected_refs: list[HuggingFaceNotebookRef] = sorted_refs[: selection.max_notebooks]
+    selected_refs: list[HuggingFaceNotebookRef] = sorted_refs[:max_notebooks] if max_notebooks > 0 else sorted_refs
     notebook_paths: list[Path] = []
     downloaded_refs: list[HuggingFaceNotebookRef] = []
     notebook_paths_by_type: dict[str, list[Path]] = {}

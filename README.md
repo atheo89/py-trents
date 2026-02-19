@@ -31,7 +31,7 @@ python3 main.py [options]
 ### Common options
 
 - `--source`: `kaggle` | `github` | `huggingface` (default: `kaggle`)
-- `--max-notebooks`: number of notebooks to analyze (default: `50`)
+- `--max-notebooks`: number of notebooks to analyze (default: `50` for Kaggle/GitHub; if omitted for Hugging Face, scans and downloads all available notebooks)
 - `--output-dir`: base output directory (default: `data`)
 
 ### Kaggle source
@@ -78,6 +78,7 @@ Options:
 
 - `--hf-repo-types`: comma-separated list of repo types (default: `model,dataset,space`)
 - `--hf-sort`: `likes`, `downloads`, `trending_score`, `created_at`, `last_modified` (default: `likes`)
+- `--max-notebooks`: optional for Hugging Face; when omitted, scans all repos and downloads all discovered notebooks
 
 Downloads are stored under:
 
@@ -117,7 +118,7 @@ data/github_notebooks/
 data/huggingface_notebooks/
 ```
 
-Each source has its own tab with library usage charts plus full tables for libraries and extensions. The Hugging Face tab lets you switch between repo types (model/dataset/space), and Kaggle/Hugging Face include an "All" option to aggregate their subcategories. A fourth tab aggregates all downloaded notebooks across sources.
+Each source has its own tab with library usage charts plus full tables for libraries and extensions. The Hugging Face tab lets you switch between sort categories (for example, most-liked, most-downloaded, trending, most-created_at), and Kaggle/Hugging Face include an "All" option to aggregate their subcategories. A fourth tab aggregates all downloaded notebooks across sources.
 
 ### Run dashboard in Docker (data bundled in image)
 
