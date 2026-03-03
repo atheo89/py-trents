@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import functools
+import re
 import sys
 from types import ModuleType
 from collections.abc import Sequence
@@ -30,6 +32,56 @@ DEFAULT_KAGGLE_SELECTION: str = "top"
 DEFAULT_GITHUB_SELECTION: str = "most-starred"
 DEFAULT_HF_SELECTION: str = "most-liked"
 DEFAULT_HF_SELECTION_ORDER: list[str] = ["most-liked", "most-downloaded", "trending", "most-created_at", "most-last_modified"]
+DEFAULT_LIBRARY_TABLE_CSV_FILENAME: str = "complete_libraries_dashboard_table_all_resources.csv"
+DEFAULT_CURRENT_PACKAGES_CSV_FILENAME: str = "odh_notebooks_pyproject_dependency_index.csv"
+PACKAGE_COMPARISON_TAB_KEY: str = "package-comparison"
+PACKAGE_COMPARISON_ADD_NOW_THRESHOLD: float = 1.0
+PACKAGE_COMPARISON_WATCHLIST_THRESHOLD: float = 0.28
+PACKAGE_COMPARISON_HOVER_PACKAGE_LIMIT: int = 25
+PACKAGE_COMPARISON_ACTION_STATUSES: set[str] = {"Add now", "Watchlist", "Review candidate", "Hot (covered)"}
+PACKAGE_COMPARISON_STATUS_PRIORITY: dict[str, int] = {
+    "Add now": 1,
+    "Watchlist": 2,
+    "Review candidate": 3,
+    "Hot (covered)": 4,
+    "Covered (long tail)": 5,
+    "Specialized covered": 6,
+    "Core/Internal": 7,
+    "Long-tail gap": 8,
+}
+PACKAGE_COMPARISON_STATUS_COLORS: dict[str, str] = {
+    "Add now": "#ef4444",
+    "Watchlist": "#f97316",
+    "Review candidate": "#8b5cf6",
+    "Hot (covered)": "#22c55e",
+    "Covered (long tail)": "#16a34a",
+    "Specialized covered": "#0ea5e9",
+    "Core/Internal": "#64748b",
+    "Long-tail gap": "#94a3b8",
+}
+PLATFORM_RUNTIME_PREFIXES: tuple[str, ...] = ("odh-", "jupyter", "ipython", "nb", "kfp", "kubeflow")
+PLATFORM_RUNTIME_PACKAGES: set[str] = {
+    "debugpy",
+    "ipykernel",
+    "jinja2",
+    "jupyter-client",
+    "markupsafe",
+    "micropipenv",
+    "nvidia-ml-py",
+    "opencensus",
+    "prometheus-client",
+    "prompt-toolkit",
+    "py-spy",
+    "pyzmq",
+    "requests-toolbelt",
+    "setuptools",
+    "tornado",
+    "traitlets",
+    "urllib3",
+    "uv",
+    "virtualenv",
+    "wheel",
+}
 SELECTION_LABEL_OVERRIDES: dict[str, str] = {
     "most-created_at": "Latest",
 }
@@ -233,6 +285,28 @@ EXTENSION_TABLE_COLUMNS: list[dict[str, str]] = [
     {"name": "Notebook Count", "id": "count"},
     {"name": "Usage %", "id": "percent"},
 ]
+PACKAGE_COMPARISON_ACTION_COLUMNS: list[dict[str, str]] = [
+    {"name": "Package", "id": "package_name"},
+    {"name": "Status", "id": "status"},
+    {"name": "Recommendation", "id": "recommendation"},
+    {"name": "Family", "id": "family"},
+    {"name": "External Usage %", "id": "external_percent"},
+    {"name": "External Count", "id": "external_count"},
+    {"name": "Flavor Coverage", "id": "flavor_count"},
+]
+PACKAGE_COMPARISON_CURRENT_COLUMNS: list[dict[str, str]] = [
+    {"name": "Row", "id": "row_number"},
+    {"name": "Package", "id": "package_name"},
+    {"name": "Flavor Count", "id": "flavor_count"},
+    {"name": "Flavors", "id": "flavors"},
+]
+PACKAGE_COMPARISON_EXTERNAL_COLUMNS: list[dict[str, str]] = [
+    {"name": "Row", "id": "row_number"},
+    {"name": "Package", "id": "name"},
+    {"name": "Family", "id": "family"},
+    {"name": "Notebook Count", "id": "count"},
+    {"name": "Usage %", "id": "percent"},
+]
 
 
 @dataclass(frozen=True)
@@ -323,6 +397,13 @@ class BuildTabsLayoutRequest:
     sources: list[SourceDefinition]
     selection_options: dict[str, SelectionOptions]
     component_ids: dict[str, SourceComponentIds]
+    comparison_tab: Component | None = None
+
+
+@dataclass(frozen=True)
+class BuildPackageComparisonTabRequest:
+    modules: DashModules
+    config: DashboardConfig
 
 
 @dataclass(frozen=True)
@@ -378,6 +459,51 @@ class SummaryMetricsRequest:
 class KpiMetric:
     label: str
     value: str
+
+
+@dataclass(frozen=True)
+class CurrentPackageRecord:
+    package_name: str
+    canonical_name: str
+    flavor_count: int
+    flavors: str
+
+
+@dataclass(frozen=True)
+class ExternalPackageRecord:
+    package_name: str
+    canonical_name: str
+    family: str
+    count: int
+    percent: float
+    row_number: int
+
+
+@dataclass(frozen=True)
+class PackageComparisonRow:
+    package_name: str
+    canonical_name: str
+    family: str
+    status: str
+    recommendation: str
+    in_current: bool
+    in_external: bool
+    flavor_count: int
+    external_count: int
+    external_percent: float
+    marker_size: float
+
+
+@dataclass(frozen=True)
+class PackageComparisonDataset:
+    current_records: dict[str, CurrentPackageRecord]
+    external_records: dict[str, ExternalPackageRecord]
+    comparison_rows: list[PackageComparisonRow]
+    action_rows: list[dict[str, int | float | str]]
+    current_table_rows: list[dict[str, int | float | str]]
+    external_table_rows: list[dict[str, int | float | str]]
+    metrics: list[KpiMetric]
+    status_message: str
 
 
 @dataclass(frozen=True)
@@ -780,13 +906,435 @@ def build_tabs_layout(request: BuildTabsLayoutRequest) -> Component:
         options: SelectionOptions = request.selection_options[source.key]
         ids: SourceComponentIds = request.component_ids[source.key]
         tabs.append(request.modules.dcc.Tab(label=source.label, value=source.key, children=build_tab_layout(BuildTabLayoutRequest(modules=request.modules, source=source, selection_options=options, ids=ids))))
-    return request.modules.html.Div([request.modules.dcc.Tabs(value=request.sources[0].key, children=tabs)])
+    if request.comparison_tab is not None:
+        tabs.append(request.comparison_tab)
+    default_tab_value: str = request.sources[0].key if len(request.sources) > 0 else PACKAGE_COMPARISON_TAB_KEY
+    return request.modules.html.Div([request.modules.dcc.Tabs(id="dashboard-tabs", value=default_tab_value, children=tabs)])
 
 
 def build_status_message(selection_dir: Path, analyzed: int, skipped: int) -> str:
     if not selection_dir.exists():
         return f"No notebooks found at {selection_dir}."
     return f"Analyzed {analyzed} notebooks. Skipped {skipped} invalid notebooks."
+
+
+def resolve_library_table_field_names() -> list[str]:
+    table_field_names: list[str] = [column["id"] for column in LIBRARY_TABLE_COLUMNS]
+    return ["row_number", *table_field_names]
+
+
+def build_library_table_csv_path(data_dir: Path) -> Path:
+    return data_dir / DEFAULT_LIBRARY_TABLE_CSV_FILENAME
+
+
+def save_library_table_csv(data_dir: Path, rows: Sequence[dict[str, int | float | str]]) -> Path:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    output_path: Path = build_library_table_csv_path(data_dir=data_dir)
+    field_names: list[str] = resolve_library_table_field_names()
+    ordered_rows: list[dict[str, int | float | str]] = []
+    for row_number, row in enumerate(rows, start=1):
+        ordered_row: dict[str, int | float | str] = {"row_number": row_number}
+        for field_name in field_names[1:]:
+            ordered_row[field_name] = row.get(field_name, "")
+        ordered_rows.append(ordered_row)
+    with output_path.open("w", encoding="utf-8", newline="") as output_file:
+        writer: csv.DictWriter[str] = csv.DictWriter(output_file, fieldnames=field_names)
+        writer.writeheader()
+        writer.writerows(ordered_rows)
+    return output_path
+
+
+def build_current_packages_csv_path(data_dir: Path) -> Path:
+    return data_dir / DEFAULT_CURRENT_PACKAGES_CSV_FILENAME
+
+
+def normalize_package_identifier(package_name: str) -> str:
+    lowered_name: str = package_name.strip().lower()
+    return re.sub(r"[-_.]+", "-", lowered_name)
+
+
+def parse_csv_int(raw_value: str) -> int:
+    normalized_value: str = raw_value.strip()
+    if normalized_value == "":
+        return 0
+    try:
+        return int(float(normalized_value))
+    except ValueError:
+        return 0
+
+
+def parse_csv_float(raw_value: str) -> float:
+    normalized_value: str = raw_value.strip()
+    if normalized_value == "":
+        return 0.0
+    try:
+        return float(normalized_value)
+    except ValueError:
+        return 0.0
+
+
+def is_platform_runtime_package(package_name: str) -> bool:
+    normalized_name: str = normalize_package_identifier(package_name)
+    if normalized_name in PLATFORM_RUNTIME_PACKAGES:
+        return True
+    for prefix in PLATFORM_RUNTIME_PREFIXES:
+        if normalized_name.startswith(prefix):
+            return True
+    return False
+
+
+def resolve_package_comparison_status(package_name: str, in_current: bool, in_external: bool, flavor_count: int, external_percent: float) -> tuple[str, str]:
+    if in_current and in_external:
+        if external_percent >= PACKAGE_COMPARISON_ADD_NOW_THRESHOLD:
+            return "Hot (covered)", "Keep package and monitor version freshness."
+        return "Covered (long tail)", "Keep package if maintenance cost stays low."
+    if not in_current and in_external:
+        if external_percent >= PACKAGE_COMPARISON_ADD_NOW_THRESHOLD:
+            return "Add now", "Prioritize this package for the next image update."
+        if external_percent >= PACKAGE_COMPARISON_WATCHLIST_THRESHOLD:
+            return "Watchlist", "Evaluate security/size impact before inclusion."
+        return "Long-tail gap", "Add only on demand."
+    if is_platform_runtime_package(package_name):
+        return "Core/Internal", "Keep as platform/runtime dependency."
+    if flavor_count <= 2:
+        return "Review candidate", "Validate telemetry usage and consider removal."
+    return "Specialized covered", "Keep for targeted workloads."
+
+
+def resolve_comparison_marker_size(external_count: int, flavor_count: int) -> float:
+    if external_count <= 0:
+        return float(10 + min(flavor_count, 12))
+    scaled_size: float = (float(external_count) ** 0.5) * 2.0 + 8.0
+    return max(10.0, min(46.0, scaled_size))
+
+
+def format_family_hover_package_list(packages: Sequence[tuple[float, str]], max_items: int = PACKAGE_COMPARISON_HOVER_PACKAGE_LIMIT) -> str:
+    if len(packages) == 0:
+        return "None"
+    ordered_packages: list[tuple[float, str]] = sorted(packages, key=lambda item: (-item[0], item[1].lower()))
+    visible_packages: list[tuple[float, str]] = ordered_packages[:max_items]
+    lines: list[str] = [f"{name} ({percent:.2f}%)" for percent, name in visible_packages]
+    hidden_count: int = len(ordered_packages) - len(visible_packages)
+    if hidden_count > 0:
+        lines.append(f"... and {hidden_count} more")
+    return "<br>".join(lines)
+
+
+def load_current_package_records(data_dir: Path) -> tuple[dict[str, CurrentPackageRecord], list[dict[str, int | float | str]], str | None]:
+    csv_path: Path = build_current_packages_csv_path(data_dir=data_dir)
+    if not csv_path.exists():
+        return {}, [], f"Current package CSV not found: {csv_path}"
+    records: dict[str, CurrentPackageRecord] = {}
+    table_rows: list[dict[str, int | float | str]] = []
+    try:
+        with csv_path.open("r", encoding="utf-8", newline="") as input_file:
+            reader: csv.DictReader[str] = csv.DictReader(input_file)
+            for row_number, row in enumerate(reader, start=1):
+                package_name: str = str(row.get("package_name", "")).strip()
+                if package_name == "":
+                    continue
+                flavors: str = str(row.get("flavors", "")).strip()
+                flavor_items: list[str] = [value.strip() for value in flavors.split("|") if value.strip() != ""]
+                flavor_count: int = len(flavor_items)
+                canonical_name: str = normalize_package_identifier(package_name)
+                if canonical_name == "":
+                    continue
+                existing_record: CurrentPackageRecord | None = records.get(canonical_name)
+                candidate_record: CurrentPackageRecord = CurrentPackageRecord(package_name=package_name, canonical_name=canonical_name, flavor_count=flavor_count, flavors=flavors)
+                if existing_record is None or candidate_record.flavor_count > existing_record.flavor_count:
+                    records[canonical_name] = candidate_record
+                table_rows.append({"row_number": row_number, "package_name": package_name, "flavor_count": flavor_count, "flavors": flavors})
+    except OSError as exc:
+        return {}, [], f"Failed to read current package CSV at {csv_path}: {exc}"
+    return records, table_rows, None
+
+
+def load_external_package_records(data_dir: Path) -> tuple[dict[str, ExternalPackageRecord], list[dict[str, int | float | str]], str | None]:
+    csv_path: Path = build_library_table_csv_path(data_dir=data_dir)
+    if not csv_path.exists():
+        return {}, [], f"External package CSV not found: {csv_path}"
+    records: dict[str, ExternalPackageRecord] = {}
+    table_rows: list[dict[str, int | float | str]] = []
+    try:
+        with csv_path.open("r", encoding="utf-8", newline="") as input_file:
+            reader: csv.DictReader[str] = csv.DictReader(input_file)
+            for fallback_row_number, row in enumerate(reader, start=1):
+                package_name: str = str(row.get("name", "")).strip()
+                if package_name == "":
+                    continue
+                canonical_name: str = normalize_package_identifier(package_name)
+                if canonical_name == "":
+                    continue
+                row_number: int = parse_csv_int(str(row.get("row_number", "")))
+                if row_number <= 0:
+                    row_number = fallback_row_number
+                family_name: str = str(row.get("family", "")).strip()
+                if family_name == "":
+                    family_name = resolve_family_name(package_name)
+                count_value: int = parse_csv_int(str(row.get("count", "")))
+                percent_value: float = parse_csv_float(str(row.get("percent", "")))
+                candidate_record: ExternalPackageRecord = ExternalPackageRecord(package_name=package_name, canonical_name=canonical_name, family=family_name, count=count_value, percent=percent_value, row_number=row_number)
+                existing_record: ExternalPackageRecord | None = records.get(canonical_name)
+                if existing_record is None or candidate_record.count > existing_record.count:
+                    records[canonical_name] = candidate_record
+                table_rows.append({"row_number": row_number, "name": package_name, "family": family_name, "count": count_value, "percent": round(percent_value, 2)})
+    except OSError as exc:
+        return {}, [], f"Failed to read external package CSV at {csv_path}: {exc}"
+    return records, table_rows, None
+
+
+def build_package_comparison_rows(current_records: dict[str, CurrentPackageRecord], external_records: dict[str, ExternalPackageRecord]) -> list[PackageComparisonRow]:
+    all_package_keys: list[str] = sorted(set(current_records.keys()) | set(external_records.keys()))
+    comparison_rows: list[PackageComparisonRow] = []
+    for package_key in all_package_keys:
+        current_record: CurrentPackageRecord | None = current_records.get(package_key)
+        external_record: ExternalPackageRecord | None = external_records.get(package_key)
+        in_current: bool = current_record is not None
+        in_external: bool = external_record is not None
+        if external_record is not None:
+            package_name: str = external_record.package_name
+        else:
+            if current_record is None:
+                continue
+            package_name = current_record.package_name
+        family_name: str = external_record.family if external_record is not None else resolve_family_name(package_name)
+        external_count: int = external_record.count if external_record is not None else 0
+        external_percent: float = external_record.percent if external_record is not None else 0.0
+        flavor_count: int = current_record.flavor_count if current_record is not None else 0
+        status, recommendation = resolve_package_comparison_status(package_name=package_name, in_current=in_current, in_external=in_external, flavor_count=flavor_count, external_percent=external_percent)
+        marker_size: float = resolve_comparison_marker_size(external_count=external_count, flavor_count=flavor_count)
+        comparison_rows.append(PackageComparisonRow(package_name=package_name, canonical_name=package_key, family=family_name, status=status, recommendation=recommendation, in_current=in_current, in_external=in_external, flavor_count=flavor_count, external_count=external_count, external_percent=external_percent, marker_size=marker_size))
+    comparison_rows.sort(key=lambda row: (PACKAGE_COMPARISON_STATUS_PRIORITY.get(row.status, 99), -row.external_percent, -row.external_count, row.flavor_count, row.package_name.lower()))
+    return comparison_rows
+
+
+def build_package_comparison_action_rows(comparison_rows: Sequence[PackageComparisonRow]) -> list[dict[str, int | float | str]]:
+    selected_rows: list[PackageComparisonRow] = [row for row in comparison_rows if row.status in PACKAGE_COMPARISON_ACTION_STATUSES]
+    selected_rows.sort(key=lambda row: (PACKAGE_COMPARISON_STATUS_PRIORITY.get(row.status, 99), -row.external_percent, -row.external_count, row.flavor_count, row.package_name.lower()))
+    action_rows: list[dict[str, int | float | str]] = []
+    for row in selected_rows:
+        action_rows.append({"package_name": row.package_name, "status": row.status, "recommendation": row.recommendation, "family": row.family, "external_percent": round(row.external_percent, 2), "external_count": row.external_count, "flavor_count": row.flavor_count})
+    return action_rows
+
+
+def build_package_comparison_metrics(current_records: dict[str, CurrentPackageRecord], external_records: dict[str, ExternalPackageRecord], comparison_rows: Sequence[PackageComparisonRow]) -> list[KpiMetric]:
+    current_count: int = len(current_records)
+    external_count: int = len(external_records)
+    overlap_count: int = len(set(current_records.keys()) & set(external_records.keys()))
+    total_external_usage: int = sum(record.count for record in external_records.values())
+    covered_external_usage: int = sum(record.count for package_key, record in external_records.items() if package_key in current_records)
+    weighted_coverage: float = (100.0 * covered_external_usage / total_external_usage) if total_external_usage > 0 else 0.0
+    add_now_count: int = sum(1 for row in comparison_rows if row.status == "Add now")
+    review_count: int = sum(1 for row in comparison_rows if row.status == "Review candidate")
+    return [
+        KpiMetric(label="Current packages", value=str(current_count)),
+        KpiMetric(label="External packages", value=str(external_count)),
+        KpiMetric(label="Overlap", value=f"{overlap_count}"),
+        KpiMetric(label="Weighted external coverage", value=f"{weighted_coverage:.2f}%"),
+        KpiMetric(label="Add now candidates", value=str(add_now_count)),
+        KpiMetric(label="Review candidates", value=str(review_count)),
+    ]
+
+
+def build_package_priority_matrix_figure(comparison_rows: Sequence[PackageComparisonRow]) -> Figure:
+    if len(comparison_rows) == 0:
+        return build_empty_figure(EmptyFigureRequest(message="No package comparison data available."))
+    import plotly.graph_objects as go
+    ordered_statuses: list[str] = sorted({row.status for row in comparison_rows}, key=lambda status: (PACKAGE_COMPARISON_STATUS_PRIORITY.get(status, 99), status))
+    fig: Figure = go.Figure()
+    for status_name in ordered_statuses:
+        status_rows: list[PackageComparisonRow] = [row for row in comparison_rows if row.status == status_name]
+        custom_data: list[list[str | int]] = [[row.family, row.recommendation, row.external_count, "yes" if row.in_current else "no", "yes" if row.in_external else "no"] for row in status_rows]
+        fig.add_trace(
+            go.Scatter(
+                x=[row.external_percent for row in status_rows],
+                y=[row.flavor_count for row in status_rows],
+                mode="markers",
+                name=status_name,
+                text=[row.package_name for row in status_rows],
+                customdata=custom_data,
+                marker={
+                    "size": [row.marker_size for row in status_rows],
+                    "opacity": 0.78,
+                    "color": PACKAGE_COMPARISON_STATUS_COLORS.get(status_name, DEFAULT_FAMILY_COLOR),
+                    "line": {"width": 1, "color": "#ffffff"},
+                },
+                hovertemplate="<b>%{text}</b><br>Status: "
+                + status_name
+                + "<br>External usage: %{x:.2f}%<br>Flavor coverage: %{y}<br>External count: %{customdata[2]}<br>Family: %{customdata[0]}<br>In IDE: %{customdata[3]}<br>In external set: %{customdata[4]}<br>Recommendation: %{customdata[1]}<extra></extra>",
+            ),
+        )
+    fig.add_vline(x=PACKAGE_COMPARISON_WATCHLIST_THRESHOLD, line={"color": "#94a3b8", "dash": "dot", "width": 1})
+    fig.add_vline(x=PACKAGE_COMPARISON_ADD_NOW_THRESHOLD, line={"color": "#64748b", "dash": "dash", "width": 1})
+    fig.update_layout(
+        title="Package priority matrix: external demand vs IDE coverage",
+        xaxis_title="External usage share (%)",
+        yaxis_title="Flavor coverage in current IDE",
+        margin={"l": 80, "r": 20, "t": 60, "b": 40},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0.0},
+    )
+    fig.update_xaxes(range=[0, max(2.0, max(row.external_percent for row in comparison_rows) * 1.05)])
+    fig.update_yaxes(dtick=1)
+    return fig
+
+
+def build_package_family_gap_figure(current_records: dict[str, CurrentPackageRecord], external_records: dict[str, ExternalPackageRecord]) -> Figure:
+    if len(external_records) == 0:
+        return build_empty_figure(EmptyFigureRequest(message="No external package data available."))
+    import plotly.graph_objects as go
+    family_totals: dict[str, dict[str, float]] = {}
+    family_packages: dict[str, dict[str, list[tuple[float, str]]]] = {}
+    for package_key, external_record in external_records.items():
+        family_name: str = external_record.family if external_record.family != "" else resolve_family_name(external_record.package_name)
+        if family_name not in family_totals:
+            family_totals[family_name] = {"covered": 0.0, "missing": 0.0}
+            family_packages[family_name] = {"covered": [], "missing": []}
+        if package_key in current_records:
+            family_totals[family_name]["covered"] += external_record.percent
+            family_packages[family_name]["covered"].append((external_record.percent, external_record.package_name))
+        else:
+            family_totals[family_name]["missing"] += external_record.percent
+            family_packages[family_name]["missing"].append((external_record.percent, external_record.package_name))
+    ordered_families: list[str] = sorted(family_totals.keys(), key=lambda family_name: (-(family_totals[family_name]["covered"] + family_totals[family_name]["missing"]), resolve_family_order(family_name), family_name.lower()))
+    covered_values: list[float] = [round(family_totals[family_name]["covered"], 2) for family_name in ordered_families]
+    missing_values: list[float] = [round(family_totals[family_name]["missing"], 2) for family_name in ordered_families]
+    covered_package_lists: list[str] = [format_family_hover_package_list(packages=family_packages[family_name]["covered"]) for family_name in ordered_families]
+    missing_package_lists: list[str] = [format_family_hover_package_list(packages=family_packages[family_name]["missing"]) for family_name in ordered_families]
+    fig: Figure = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            name="Covered in IDE",
+            x=covered_values,
+            y=ordered_families,
+            orientation="h",
+            marker_color="#22c55e",
+            customdata=covered_package_lists,
+            hovertemplate="<b>%{y}</b><br>Covered usage: %{x:.2f}%<br><br><b>Packages</b><br>%{customdata}<extra></extra>",
+        ),
+    )
+    fig.add_trace(
+        go.Bar(
+            name="Missing in IDE",
+            x=missing_values,
+            y=ordered_families,
+            orientation="h",
+            marker_color="#ef4444",
+            customdata=missing_package_lists,
+            hovertemplate="<b>%{y}</b><br>Missing usage: %{x:.2f}%<br><br><b>Packages</b><br>%{customdata}<extra></extra>",
+        ),
+    )
+    fig.update_layout(
+        title="External usage share by family: covered vs missing",
+        barmode="stack",
+        xaxis_title="External usage share (%)",
+        yaxis_title="Family",
+        yaxis={"autorange": "reversed"},
+        margin={"l": 140, "r": 20, "t": 60, "b": 40},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0.0},
+    )
+    return fig
+
+
+@lru_cache(maxsize=8)
+def build_package_comparison_dataset(data_dir: Path) -> PackageComparisonDataset:
+    resolved_data_dir: Path = data_dir.resolve()
+    current_records, current_table_rows, current_error = load_current_package_records(data_dir=resolved_data_dir)
+    external_records, external_table_rows, external_error = load_external_package_records(data_dir=resolved_data_dir)
+    comparison_rows: list[PackageComparisonRow] = build_package_comparison_rows(current_records=current_records, external_records=external_records)
+    action_rows: list[dict[str, int | float | str]] = build_package_comparison_action_rows(comparison_rows=comparison_rows)
+    metrics: list[KpiMetric] = build_package_comparison_metrics(current_records=current_records, external_records=external_records, comparison_rows=comparison_rows)
+    error_messages: list[str] = [message for message in [current_error, external_error] if message is not None]
+    if len(error_messages) > 0:
+        status_message: str = " ".join(error_messages)
+    else:
+        overlap_count: int = len(set(current_records.keys()) & set(external_records.keys()))
+        status_message = f"Compared {len(current_records)} current IDE packages against {len(external_records)} external packages. Overlap: {overlap_count}."
+    return PackageComparisonDataset(current_records=current_records, external_records=external_records, comparison_rows=comparison_rows, action_rows=action_rows, current_table_rows=current_table_rows, external_table_rows=external_table_rows, metrics=metrics, status_message=status_message)
+
+
+def build_package_comparison_tab(request: BuildPackageComparisonTabRequest) -> Component:
+    dataset: PackageComparisonDataset = build_package_comparison_dataset(data_dir=request.config.data_dir)
+    priority_figure: Figure = build_package_priority_matrix_figure(comparison_rows=dataset.comparison_rows)
+    family_gap_figure: Figure = build_package_family_gap_figure(current_records=dataset.current_records, external_records=dataset.external_records)
+    summary_cards: list[Component] = build_metric_cards(MetricCardsRequest(modules=request.modules, metrics=dataset.metrics))
+    return request.modules.dcc.Tab(
+        label="Package comparison",
+        value=PACKAGE_COMPARISON_TAB_KEY,
+        children=request.modules.html.Div(
+            [
+                request.modules.html.H2("Package comparison"),
+                request.modules.html.Div(
+                    "Comparison of current IDE packages vs broad external package usage to highlight hot packages, obsolete candidates, and potential additions.",
+                    style={"fontSize": "14px", "color": "#374151"},
+                ),
+                request.modules.html.Div(dataset.status_message, style={"marginTop": "8px", "color": "#6b7280"}),
+                request.modules.html.Div(id="package-comparison-summary", children=summary_cards, style=CARD_CONTAINER_STYLE),
+                request.modules.html.Div(
+                    [
+                        request.modules.html.H3("Priority matrix"),
+                        request.modules.dcc.Graph(id="package-comparison-priority-matrix", figure=priority_figure),
+                    ],
+                    style=SECTION_STYLE,
+                ),
+                request.modules.html.Div(
+                    [
+                        request.modules.html.H3("Family coverage gap"),
+                        request.modules.dcc.Graph(id="package-comparison-family-gap", figure=family_gap_figure),
+                    ],
+                    style=SECTION_STYLE,
+                ),
+                request.modules.html.Div(
+                    [
+                        request.modules.html.H3("Action table (Hot, Add now, Watchlist, Review)"),
+                        request.modules.dash_table.DataTable(
+                            id="package-comparison-action-table",
+                            columns=PACKAGE_COMPARISON_ACTION_COLUMNS,
+                            data=dataset.action_rows,
+                            page_size=15,
+                            sort_action="native",
+                            filter_action="native",
+                            style_table=TABLE_STYLE,
+                            style_cell={"textAlign": "left", "whiteSpace": "normal", "height": "auto"},
+                        ),
+                    ],
+                    style=SECTION_STYLE,
+                ),
+                request.modules.html.Div(
+                    [
+                        request.modules.html.H3("Current packages CSV (raw dataframe)"),
+                        request.modules.dash_table.DataTable(
+                            id="package-comparison-current-csv-table",
+                            columns=PACKAGE_COMPARISON_CURRENT_COLUMNS,
+                            data=dataset.current_table_rows,
+                            page_size=12,
+                            sort_action="native",
+                            filter_action="native",
+                            style_table=TABLE_STYLE,
+                            style_cell={"textAlign": "left"},
+                        ),
+                    ],
+                    style=SECTION_STYLE,
+                ),
+                request.modules.html.Div(
+                    [
+                        request.modules.html.H3("External packages CSV (raw dataframe)"),
+                        request.modules.dash_table.DataTable(
+                            id="package-comparison-external-csv-table",
+                            columns=PACKAGE_COMPARISON_EXTERNAL_COLUMNS,
+                            data=dataset.external_table_rows,
+                            page_size=12,
+                            sort_action="native",
+                            filter_action="native",
+                            style_table=TABLE_STYLE,
+                            style_cell={"textAlign": "left"},
+                        ),
+                    ],
+                    style=SECTION_STYLE,
+                ),
+            ],
+            style=APP_STYLE,
+        ),
+    )
 
 
 def update_source_tab(selection_label: str, source: SourceDefinition, modules: DashModules, config: DashboardConfig) -> tuple[list[Component], Figure, Figure, list[dict[str, int | float | str]], list[dict[str, int | float | str]], str]:
@@ -813,6 +1361,9 @@ def update_source_tab(selection_label: str, source: SourceDefinition, modules: D
     library_rows: list[dict[str, int | float | str]] = build_usage_table_rows(UsageTableRequest(report=report.library_report, include_family=True))
     extension_rows: list[dict[str, int | float | str]] = build_usage_table_rows(UsageTableRequest(report=report.extension_report))
     status_message: str = build_status_message(selection_dir=selection_dir, analyzed=report.analyzed_notebooks, skipped=report.skipped_notebooks)
+    if source.is_aggregate:
+        library_csv_path: Path = save_library_table_csv(data_dir=config.data_dir, rows=library_rows)
+        status_message = f"{status_message} Library table CSV: {library_csv_path}"
     return summary_cards, library_figure, family_figure, library_rows, extension_rows, status_message
 
 
@@ -848,8 +1399,9 @@ def build_app(request: BuildAppRequest) -> Dash:
         selection_options[source.key] = resolve_selection_options(ResolveSelectionOptionsRequest(base_dir=source.base_dir, default_selection=source.default_selection, is_aggregate=source.is_aggregate, fallback_options=fallback_options, include_all=include_all, preferred_order=preferred_order))
     component_ids: dict[str, SourceComponentIds] = {source.key: build_component_ids(ComponentIdsRequest(source_key=source.key)) for source in sources}
     modules: DashModules = DashModules(dcc=dcc, html=html, dash_table=dash_table)
+    comparison_tab: Component = build_package_comparison_tab(BuildPackageComparisonTabRequest(modules=modules, config=request.config))
     app: Dash = Dash(__name__)
-    app.layout = build_tabs_layout(BuildTabsLayoutRequest(modules=modules, sources=sources, selection_options=selection_options, component_ids=component_ids))
+    app.layout = build_tabs_layout(BuildTabsLayoutRequest(modules=modules, sources=sources, selection_options=selection_options, component_ids=component_ids, comparison_tab=comparison_tab))
     execute_register_callbacks(RegisterCallbacksRequest(app=app, modules=modules, sources=sources, component_ids=component_ids, config=request.config))
     return app
 

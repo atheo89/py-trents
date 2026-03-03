@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -41,6 +42,7 @@ class AppReport:
     source_name: str
     selection_label: str
     requested_max: int
+    analysis_output_dir: Path
     category_library_reports: dict[str, UsageReport] = field(default_factory=dict)
 
 
@@ -54,6 +56,7 @@ DEFAULT_GITHUB_QUERY: str = "extension:ipynb"
 DEFAULT_HF_SORT: str = "likes"
 DEFAULT_HF_REPO_TYPES: list[str] = ["model", "dataset", "space"]
 DEFAULT_MAX_NOTEBOOKS: int = 50
+DEFAULT_LIBRARY_ANALYSIS_CSV_FILENAME: str = "complete_libraries_analysis.csv"
 
 
 def parse_selection_type(raw_value: str) -> SelectionType:
@@ -196,7 +199,14 @@ def run_kaggle_pipeline(config: AppConfig) -> AppReport:
         extension_usages.append(NotebookFeatureUsage(notebook_path=notebook_path, features=parse_result.extensions))
     library_report: UsageReport = compute_usage_metrics(UsageMetricsRequest(notebook_usages=library_usages))
     extension_report: UsageReport = compute_usage_metrics(UsageMetricsRequest(notebook_usages=extension_usages))
-    return AppReport(library_report=library_report, extension_report=extension_report, source_name=config.source.value, selection_label=config.selection_type.value, requested_max=config.max_notebooks)
+    return AppReport(
+        library_report=library_report,
+        extension_report=extension_report,
+        source_name=config.source.value,
+        selection_label=config.selection_type.value,
+        requested_max=config.max_notebooks,
+        analysis_output_dir=selection_output_dir,
+    )
 
 
 def collect_valid_usages(notebook_paths: Sequence[Path], normalizer_config: object, library_usages: list[NotebookFeatureUsage], extension_usages: list[NotebookFeatureUsage], processed_paths: set[Path], target_count: int, path_to_category: Mapping[Path, str] | None = None, category_library_usages: dict[str, list[NotebookFeatureUsage]] | None = None, category_extension_usages: dict[str, list[NotebookFeatureUsage]] | None = None) -> bool:
@@ -254,7 +264,14 @@ def run_github_pipeline(config: AppConfig) -> AppReport:
         attempt += 1
     library_report: UsageReport = compute_usage_metrics(UsageMetricsRequest(notebook_usages=library_usages))
     extension_report: UsageReport = compute_usage_metrics(UsageMetricsRequest(notebook_usages=extension_usages))
-    return AppReport(library_report=library_report, extension_report=extension_report, source_name=config.source.value, selection_label=selection_label, requested_max=config.max_notebooks)
+    return AppReport(
+        library_report=library_report,
+        extension_report=extension_report,
+        source_name=config.source.value,
+        selection_label=selection_label,
+        requested_max=config.max_notebooks,
+        analysis_output_dir=selection_output_dir,
+    )
 
 
 def run_huggingface_pipeline(config: AppConfig) -> AppReport:
@@ -278,7 +295,15 @@ def run_huggingface_pipeline(config: AppConfig) -> AppReport:
     category_library_reports: dict[str, UsageReport] = {}
     for category, notebook_usages in category_library_usages.items():
         category_library_reports[category] = compute_usage_metrics(UsageMetricsRequest(notebook_usages=notebook_usages))
-    return AppReport(library_report=library_report, extension_report=extension_report, source_name=config.source.value, selection_label=selection_label, requested_max=config.max_notebooks, category_library_reports=category_library_reports)
+    return AppReport(
+        library_report=library_report,
+        extension_report=extension_report,
+        source_name=config.source.value,
+        selection_label=selection_label,
+        requested_max=config.max_notebooks,
+        analysis_output_dir=selection_output_dir,
+        category_library_reports=category_library_reports,
+    )
 
 
 def run_pipeline(config: AppConfig) -> AppReport:
@@ -287,6 +312,25 @@ def run_pipeline(config: AppConfig) -> AppReport:
     if config.source == SourceType.HUGGINGFACE:
         return run_huggingface_pipeline(config)
     return run_kaggle_pipeline(config)
+
+
+def build_complete_library_rows(report: UsageReport) -> list[dict[str, int | float | str]]:
+    rows: list[dict[str, int | float | str]] = []
+    for usage in report.usage:
+        rows.append({"library_name": usage.name, "notebook_count": usage.notebook_count, "usage_percent": usage.usage_percent})
+    return rows
+
+
+def save_complete_library_csv(report: AppReport) -> Path:
+    output_path: Path = report.analysis_output_dir / DEFAULT_LIBRARY_ANALYSIS_CSV_FILENAME
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, int | float | str]] = build_complete_library_rows(report.library_report)
+    field_names: list[str] = ["library_name", "notebook_count", "usage_percent"]
+    with output_path.open("w", encoding="utf-8", newline="") as output_file:
+        writer: csv.DictWriter[str] = csv.DictWriter(output_file, fieldnames=field_names)
+        writer.writeheader()
+        writer.writerows(rows)
+    return output_path
 
 
 def print_report(report: AppReport) -> None:
@@ -337,7 +381,9 @@ def render_plots(report: AppReport) -> None:
 def main() -> None:
     config: AppConfig = parse_args(ParseArgsRequest(argv=sys.argv[1:]))
     report: AppReport = run_pipeline(config)
+    csv_path: Path = save_complete_library_csv(report)
     print_report(report)
+    print(f"Complete library analysis CSV written to: {csv_path}")
     render_plots(report)
 
 

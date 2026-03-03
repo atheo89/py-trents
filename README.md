@@ -90,6 +90,20 @@ data/huggingface_notebooks/<selection>/<repo_type>/
 
 The tool prints a ranked list of libraries and, when detectable, Jupyter extensions. Library charts are displayed with Plotly if installed. Hugging Face runs also render per-repo-type charts (model/dataset/space) when available.
 
+Each run also exports the complete library analysis table to:
+
+```text
+<selection_output_dir>/complete_libraries_analysis.csv
+```
+
+Examples:
+
+```text
+data/kaggle_notebooks/top/complete_libraries_analysis.csv
+data/github_notebooks/most-starred/complete_libraries_analysis.csv
+data/huggingface_notebooks/most-liked/complete_libraries_analysis.csv
+```
+
 Example plot title:
 
 ```
@@ -120,6 +134,20 @@ data/huggingface_notebooks/
 
 Each source has its own tab with library usage charts plus full tables for libraries and extensions. The Hugging Face tab lets you switch between sort categories (for example, most-liked, most-downloaded, trending, most-created_at), and Kaggle/Hugging Face include an "All" option to aggregate their subcategories. A fourth tab aggregates all downloaded notebooks across sources.
 
+The dashboard exports only the "All sources" version of the "Complete list of libraries" table to:
+
+```text
+data/complete_libraries_dashboard_table_all_resources.csv
+```
+
+CSV columns:
+
+- `row_number` (1, 2, 3, ...)
+- `name`
+- `family`
+- `count`
+- `percent`
+
 ### Run dashboard in Docker (data bundled in image)
 
 ```bash
@@ -147,3 +175,22 @@ podman push quay.io/rh_ee_atheodor/lib-analysis-dashboard:v1
 - Kaggle 429 errors: reduce `--max-notebooks` or retry later.
 - GitHub/HF rate limits: set `GITHUB_TOKEN` or `HF_TOKEN`.
 - Stuck run: the fetch can take time. Progress logs are printed for Hugging Face; allow a few minutes for large limits.
+
+## ODH pyproject dependency index
+
+Build a package-to-flavor dataframe from every `pyproject.toml` in the OpenDataHub notebooks repository.
+
+```bash
+venv/bin/python odh_pyproject_dependency_index.py
+```
+
+Output CSV:
+
+```text
+data/odh_notebooks_pyproject_dependency_index.csv
+```
+
+Columns:
+
+- `package_name`: normalized package name.
+- `flavors`: `|`-separated list of directory/flavor paths where the package appears.
