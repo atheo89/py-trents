@@ -1164,8 +1164,6 @@ def build_package_priority_matrix_figure(comparison_rows: Sequence[PackageCompar
                 + "<br>External usage: %{x:.2f}%<br>Flavor coverage: %{y}<br>External count: %{customdata[2]}<br>Family: %{customdata[0]}<br>In IDE: %{customdata[3]}<br>In external set: %{customdata[4]}<br>Recommendation: %{customdata[1]}<extra></extra>",
             ),
         )
-    fig.add_vline(x=PACKAGE_COMPARISON_WATCHLIST_THRESHOLD, line={"color": "#94a3b8", "dash": "dot", "width": 1})
-    fig.add_vline(x=PACKAGE_COMPARISON_ADD_NOW_THRESHOLD, line={"color": "#64748b", "dash": "dash", "width": 1})
     fig.update_layout(
         title="Package priority matrix: external demand vs IDE coverage",
         xaxis_title="External usage share (%)",
